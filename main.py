@@ -469,9 +469,14 @@ class DoorLockApp:
                 status_label.config(text="Please enter a name first!")
                 return
                 
-            # Register face using face recognition system
-            success = self.face_recognition.register_face(name)
+            # Get the current frame from the preview
+            ret, frame = cap.read()
+            if not ret:
+                status_label.config(text="Failed to capture frame! Please try again.")
+                return
             
+            success = FaceRecognitionSystem.register_face_from_frame(name, frame)
+
             if success:
                 status_label.config(text=f"Successfully registered {name}!")
                 # Update UI in main window

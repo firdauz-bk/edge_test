@@ -254,6 +254,37 @@ class FaceRecognitionSystem:
         
         return success
         
+    def register_face_from_frame(self, name, frame):
+        """
+        Register a new face from an already captured frame
+        
+        Args:
+            name (str): Name for the new face
+            frame: Already captured camera frame
+            
+        Returns:
+            bool: True if registration successful, False otherwise
+        """
+        try:
+            # Check for faces
+            faces = self.app.get(frame)
+            
+            if faces:
+                # Save the face image
+                face_filename = f"{self.saved_faces_dir}/face_{name}.png"
+                cv2.imwrite(face_filename, frame)
+                
+                # Add to database
+                self.face_database[name] = faces[0]['embedding']
+                print(f"Face registered: {name}")
+                return True
+            else:
+                print("No face found in frame")
+                return False
+        except Exception as e:
+            print(f"Error registering face: {e}")
+            return False
+    
     def cleanup(self):
         """Clean up resources"""
         self.stop_camera()
