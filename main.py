@@ -6,10 +6,11 @@ import os
 import numpy as np
 import torch
 import sounddevice as sd
+import torchaudio.transforms as T
 
-from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback
-from software.face_recognition import FaceRecognition
-from hardware.door_lock import DoorLock
+from wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
+from face_recognition import FaceRecognition
+from door_lock import DoorLock
 
 # Global variables
 wake_word_detected = False
@@ -17,11 +18,21 @@ cap = None
 face_window = None
 audio_stream = None
 
+# Set up audio buffer
+SAMPLE_RATE = 16000
+DURATION = 1.0
+BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
+audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
+THRESHOLD = 0.78
+
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 wake_word_model = WakeWordModel().to(device)
 wake_word_model.load_state_dict(torch.load("476998.pth", map_location=device))
 wake_word_model.eval()
+
+# Initialize transform for mel spectrogram (separate from model to match original)
+transform = T.MelSpectrogram(sample_rate=SAMPLE_RATE, n_mels=64, n_fft=400, hop_length=160).to(device)
 
 # Initialize face recognition
 face_recognition = FaceRecognition()
@@ -33,26 +44,24 @@ lock_system = DoorLock()
 webcam_resolution = (640, 480)
 
 def audio_callback(indata, frames, time, status):
-    global wake_word_detected
+    global wake_word_detected, audio_buffer
     if status:
         print(f"Audio callback error: {status}")
     
-    prediction = process_audio_input(indata, frames)
+    audio_buffer[:-frames] = audio_buffer[frames:]
+    audio_buffer[-frames:] = indata[:, 0]
+    
+    # Use the model to detect wake word
+    prediction = detect_wake_word(wake_word_model, audio_buffer, device)
     print(f"Wake word probability: {prediction}")
 
-    if prediction > 0.78:  # THRESHOLD value
+    if prediction > THRESHOLD:
         wake_word_detected = True
         print("Wake word detected! Scanning face...")
         stop_audio_stream()
         root.after(0, start_camera)
         print("Scanning face...")
         root.after(3000, perform_face_recognition)  # 3 second delay
-
-def process_audio_input(indata, frames):
-    global audio_buffer
-    audio_buffer[:-frames] = audio_buffer[frames:]
-    audio_buffer[-frames:] = indata[:, 0]
-    return wake_word_model.detect_wake_word(audio_buffer)
 
 # --- Camera handling functions ---
 def start_camera():
@@ -212,12 +221,6 @@ def display_saved_faces():
 
 # --- Main application ---
 if __name__ == "__main__":
-    # Set up audio buffer
-    SAMPLE_RATE = 16000
-    DURATION = 1.0
-    BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
-    audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
-    
     # Set sounddevice defaults
     sd.default.device = 0
     

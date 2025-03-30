@@ -25,18 +25,6 @@ class WakeWordModel(nn.Module):
         self.fc2 = nn.Linear(128, 1)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
-        
-        # Device setup
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Audio configuration
-        self.SAMPLE_RATE = 16000
-        self.transform = T.MelSpectrogram(
-            sample_rate=self.SAMPLE_RATE, 
-            n_mels=64, 
-            n_fft=400, 
-            hop_length=160
-        ).to(self.device)
 
     def forward(self, x):
         x = self.pool(self.relu(self.bn1(self.conv1(x))))
@@ -47,19 +35,27 @@ class WakeWordModel(nn.Module):
         x = self.dropout(self.relu(self.fc1(x)))
         x = self.fc2(x)
         return x
+
+# --- Audio Processing Functions ---
+def process_audio(audio_data, device):
+    transform = T.MelSpectrogram(
+        sample_rate=16000, 
+        n_mels=64, 
+        n_fft=400, 
+        hop_length=160
+    ).to(device)
     
-    def process_audio(self, audio_data):
-        waveform = torch.tensor(audio_data, dtype=torch.float32).to(self.device)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)  # Ensure batch dimension
-        mel_spec = self.transform(waveform).unsqueeze(0)  # Add channel dimension for Conv2D
-        return mel_spec
-    
-    def detect_wake_word(self, audio_data):
-        mel_spec = self.process_audio(audio_data)
-        with torch.no_grad():
-            output = self(mel_spec)
-            return torch.sigmoid(output).item()  # Sigmoid for probability
+    waveform = torch.tensor(audio_data, dtype=torch.float32).to(device)
+    if waveform.ndim == 1:
+        waveform = waveform.unsqueeze(0)  # Ensure batch dimension
+    mel_spec = transform(waveform).unsqueeze(0)  # Add channel dimension for Conv2D
+    return mel_spec
+
+def detect_wake_word(model, audio_data, device):
+    mel_spec = process_audio(audio_data, device)
+    with torch.no_grad():
+        output = model(mel_spec)
+        return torch.sigmoid(output).item()  # Sigmoid for probability
 
 # --- Audio Stream Control ---
 def set_callback(callback):
