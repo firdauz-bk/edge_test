@@ -56,6 +56,18 @@ def detect_wake_word(model, audio_data, device):
     with torch.no_grad():
         output = model(mel_spec)
         return torch.sigmoid(output).item()  # Sigmoid for probability
+    
+        # When detection happens, put an event in the queue
+    if prediction > THRESHOLD:
+        # Stop the ultrasonic sensor thread
+        stop_audio_stream()
+        
+        # Notify the main application
+        event_queue.put(("WAKEUP_WORD_DETECTED", None))
+        
+        print("Wake word detected!")
+    
+    return prediction
 
 # --- Audio Stream Control ---
 def set_callback(callback):
