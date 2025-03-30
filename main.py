@@ -99,7 +99,6 @@ def register_face():
         
     if cap is not None and cap.isOpened():
         cap.release()
-        cv2.destroyAllWindows()
         cap = None  
 
     face_window = tk.Toplevel(root)
@@ -134,13 +133,13 @@ def close_face_registration():
 
     if cap is not None:
         cap.release()
-        cv2.destroyAllWindows()
         cap = None  # Avoid using a released camera
     
     if not wake_word_detected:
-        start_audio_stream()  # Resume audio detection
+        # Make sure to restart the audio stream
+        root.after(100, start_audio_stream)  # Small delay to ensure cleanup is complete
     else:
-        start_camera()
+        root.after(100, start_camera)  # Small delay to ensure cleanup is complete
 
 def update_face_feed(face_label):
     if face_window.winfo_exists():  # Ensure window still exists
@@ -195,9 +194,10 @@ def save_face():
         face_window.destroy()  # Close the registration window
     
     if not wake_word_detected:
-        start_audio_stream()  # Resume audio detection
+        # Make sure to restart the audio stream
+        root.after(100, start_audio_stream)  # Small delay to ensure cleanup is complete
     else:
-        start_camera()
+        root.after(100, start_camera)  # Small delay to ensure cleanup is complete
 
 # --- Face Recognition ---
 def perform_face_recognition():
