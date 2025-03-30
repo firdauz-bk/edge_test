@@ -92,13 +92,11 @@ class DoorLockApplication:
     
     def start_wake_word_detection(self):
         """Safely start wake word detection"""
-        if not self.wake_word_detector.is_listening:
-            self.wake_word_detector.start(callback=self.on_wake_word_detected)
+        self.wake_word_detector.start(callback=self.on_wake_word_detected)
     
     def stop_wake_word_detection(self):
         """Safely stop wake word detection"""
-        if self.wake_word_detector.is_listening:
-            self.wake_word_detector.stop()
+        self.wake_word_detector.stop()
     
     def on_wake_word_detected(self):
         """Called when wake word is detected"""
@@ -188,7 +186,7 @@ class DoorLockApplication:
             del self.ultrasonic_thread
         self.system_state = "idle"
         self.start_ultrasonic_thread()  # Restart monitoring
-        
+
     def update_status(self, message, color):
         """Update the status display"""
         self.status_label.config(text=message, fg=color)
