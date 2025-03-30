@@ -5,10 +5,10 @@ import time
 from PIL import Image, ImageTk
 
 # Import our modules
-from ultrasonic import UltrasonicSensor
-from wake_word import WakeWordDetector
-from face_recognition import FaceRecognition
-from door_lock import DoorLock
+from hardware.ultrasonic import UltrasonicSensor
+from software.wake_word import WakeWordDetector
+from software.face_recognition import FaceRecognition
+from hardware.door_lock import DoorLock
 
 # GPIO Configuration
 ULTRASONIC_TRIGGER_PIN = 17
