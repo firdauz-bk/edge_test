@@ -3,6 +3,8 @@ import torch.nn as nn
 import torchaudio.transforms as T
 import numpy as np
 import sounddevice as sd
+import threading
+import time
 
 class WakeWordModel(nn.Module):
     def __init__(self):
@@ -16,7 +18,7 @@ class WakeWordModel(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc1 = nn.Linear(128, 128)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.5)  # Dropout to reduce overfitting
         self.fc2 = nn.Linear(128, 1)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
@@ -32,21 +34,14 @@ class WakeWordModel(nn.Module):
         return x
 
 class WakeWordDetector:
-    def __init__(self, callback, threshold=0.78, model_path="476998.pth", sample_rate=16000, duration=1.0):
-        self.callback = callback  # Function to call when wake word is detected
-        self.SAMPLE_RATE = sample_rate
-        self.DURATION = duration
+    def __init__(self, model_path="476998.pth", threshold=0.78):
+        # Audio configuration
+        self.SAMPLE_RATE = 16000
+        self.DURATION = 1.0
         self.BUFFER_SIZE = int(self.SAMPLE_RATE * self.DURATION)
         self.THRESHOLD = threshold
         
-        # Initialize audio buffer
-        self.audio_buffer = np.zeros(self.BUFFER_SIZE, dtype=np.float32)
-        
-        # Initialize audio stream
-        self.audio_stream = None
-        self.is_running = False
-        
-        # Set up device
+        # Initialize device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Load model
@@ -54,34 +49,42 @@ class WakeWordDetector:
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self.model.eval()
         
-        # Transform for mel spectrogram
+        # Set up mel spectrogram transform
         self.transform = T.MelSpectrogram(
             sample_rate=self.SAMPLE_RATE, 
             n_mels=64, 
             n_fft=400, 
             hop_length=160
         ).to(self.device)
+        
+        # Initialize audio buffer
+        self.audio_buffer = np.zeros(self.BUFFER_SIZE, dtype=np.float32)
+        
+        # Audio stream
+        self.audio_stream = None
+        self.running = False
+        self.callback_fn = None
     
     def audio_callback(self, indata, frames, time, status):
-        """Callback function for the audio stream"""
+        """Callback function for audio stream"""
         if status:
             print(f"Audio callback error: {status}")
-
-        # Update audio buffer
+            
+        # Update the buffer
         self.audio_buffer[:-frames] = self.audio_buffer[frames:]
         self.audio_buffer[-frames:] = indata[:, 0]
         
         # Detect wake word
         prediction = self.detect_wake_word(self.audio_buffer)
-        print(f"Wake word probability: {prediction}")
-
-        if prediction > self.THRESHOLD:
-            print("Wake word detected!")
+        print(f"Wake word probability: {prediction:.4f}")
+        
+        # If wake word detected, trigger callback
+        if prediction > self.THRESHOLD and self.callback_fn:
             self.stop()  # Stop listening
-            self.callback()  # Call the provided callback function
+            self.callback_fn()  # Trigger callback
     
     def process_audio(self, audio_data):
-        """Process audio data into mel spectrogram for model input"""
+        """Process audio data to create mel spectrogram"""
         waveform = torch.tensor(audio_data, dtype=torch.float32).to(self.device)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)  # Ensure batch dimension
@@ -89,43 +92,64 @@ class WakeWordDetector:
         return mel_spec
     
     def detect_wake_word(self, audio_data):
-        """Process audio and get wake word detection probability"""
+        """Detect wake word in audio data"""
         mel_spec = self.process_audio(audio_data)
         with torch.no_grad():
             output = self.model(mel_spec)
             return torch.sigmoid(output).item()  # Sigmoid for probability
     
-    def start(self):
-        """Start listening for wake word"""
-        if not self.is_running:
-            try:
-                # Set sounddevice default device
-                sd.default.device = 0
-                
-                # Start audio stream
-                self.audio_stream = sd.InputStream(
-                    callback=self.audio_callback,
-                    channels=1,
-                    samplerate=self.SAMPLE_RATE,
-                    blocksize=self.BUFFER_SIZE
-                )
-                self.audio_stream.start()
-                self.is_running = True
-                print("Listening for wake word...")
-            except Exception as e:
-                print(f"Error starting audio stream: {e}")
+    def start(self, callback=None):
+        """Start wake word detection"""
+        if self.running:
+            return
+            
+        self.callback_fn = callback
+        self.running = True
+        
+        try:
+            # Set default sound device if not specified
+            sd.default.device = 0
+            
+            # Start the audio stream
+            self.audio_stream = sd.InputStream(
+                callback=self.audio_callback, 
+                channels=1, 
+                samplerate=self.SAMPLE_RATE, 
+                blocksize=self.BUFFER_SIZE
+            )
+            self.audio_stream.start()
+            print("Wake word detection started")
+        except Exception as e:
+            print(f"Error starting audio stream: {e}")
+            self.running = False
     
     def stop(self):
-        """Stop listening for wake word"""
-        if self.is_running and self.audio_stream is not None:
-            try:
-                self.is_running = False  # Set this first
-                self.audio_stream.stop()
-                self.audio_stream.close()
-                self.audio_stream = None
-                print("Wake word detection stopped.")
-            except Exception as e:
-                print(f"Error stopping audio stream: {e}")
-                # Force reset of the stream object
-                self.audio_stream = None
-                self.is_running = False
+        """Stop wake word detection"""
+        self.running = False
+        if self.audio_stream is not None:
+            self.audio_stream.stop()
+            self.audio_stream.close()
+            self.audio_stream = None
+            print("Wake word detection stopped")
+
+# Test function
+def main():
+    detector = WakeWordDetector()
+    
+    def on_wake_word():
+        print("Wake word detected!")
+        detector.stop()
+    
+    detector.start(callback=on_wake_word)
+    
+    try:
+        # Run for 30 seconds
+        for _ in range(30):
+            time.sleep(1)
+            if not detector.running:
+                break
+    finally:
+        detector.stop()
+
+if __name__ == "__main__":
+    main()
