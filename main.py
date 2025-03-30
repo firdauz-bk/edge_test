@@ -1,263 +1,260 @@
 import tkinter as tk
-from threading import Thread
+from tkinter import ttk, font
+import threading
+import time
+import queue
+import RPi.GPIO as GPIO
+from ultrasonic import UltrasonicSensor
 import cv2
 from PIL import Image, ImageTk
-import os
-import numpy as np
 import torch
 import sounddevice as sd
 import torchaudio.transforms as T
-
-from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
+import numpy as np
 from software.face_recognition import FaceRecognition
-from hardware.door_lock import DoorLock
 
-# Global variables
-wake_word_detected = False
-cap = None
-face_window = None
-audio_stream = None
+# Global variables for system state
+system_state = {
+    "current_mode": "IDLE",
+    "person_detected": False,
+    "face_recognized": False,
+    "registered_users": {},
+    "current_user": "",
+    "reset_timer": None,
+    "lock_timer": None
+}
 
-# Set up audio buffer
+# Communication queue between threads
+event_queue = queue.Queue()
+
+# Hardware constants
+SOLENOID_PIN = 14
+TRIGGER_PIN = 17
+ECHO_PIN = 27
+PRESENCE_THRESHOLD = 100  # 1 meter in cm
+
+# Audio constants
 SAMPLE_RATE = 16000
 DURATION = 1.0
 BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
-audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
 THRESHOLD = 0.78
 
-# Load wake word model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-wake_word_model = WakeWordModel().to(device)
-wake_word_model.load_state_dict(torch.load("476998.pth", map_location=device))
-wake_word_model.eval()
-
-# Initialize transform for mel spectrogram (separate from model to match original)
-transform = T.MelSpectrogram(sample_rate=SAMPLE_RATE, n_mels=64, n_fft=400, hop_length=160).to(device)
-
-# Initialize face recognition
-face_recognition = FaceRecognition()
-
-# Initialize lock system
-lock_system = DoorLock()
-
-# Camera settings
-webcam_resolution = (640, 480)
-
-def audio_callback(indata, frames, time, status):
-    global wake_word_detected, audio_buffer
-    if status:
-        print(f"Audio callback error: {status}")
-    
-    audio_buffer[:-frames] = audio_buffer[frames:]
-    audio_buffer[-frames:] = indata[:, 0]
-    
-    # Use the model to detect wake word
-    prediction = detect_wake_word(wake_word_model, audio_buffer, device)
-    print(f"Wake word probability: {prediction}")
-
-    if prediction > THRESHOLD:
-        wake_word_detected = True
-        print("Wake word detected! Scanning face...")
-        stop_audio_stream()
-        root.after(0, start_camera)
-        print("Scanning face...")
-        root.after(3000, perform_face_recognition)  # 3 second delay
-
-# --- Camera handling functions ---
-def start_camera():
-    global cap
-    if cap is None or not cap.isOpened():
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, webcam_resolution[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_resolution[1])
-        update_camera_feed()
-
-def update_camera_feed():
-    global cap
-    if cap is not None and cap.isOpened():
-        ret, frame = cap.read()
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame)
-            imgtk = ImageTk.PhotoImage(image=img)
-            camera_label.imgtk = imgtk
-            camera_label.configure(image=imgtk)
-        root.after(10, update_camera_feed)
-
-def open_face_camera():
-    global cap
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, webcam_resolution[0])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, webcam_resolution[1])
-
-# --- Face registration functions ---
-def register_face():
-    global cap, face_window, wake_word_detected
-    print(wake_word_detected)
-    if not wake_word_detected:
-        stop_audio_stream()  # Pause audio thread
+class DoorLockApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Smart Door Lock System")
+        self.root.geometry("800x480")
+        self.root.attributes('-fullscreen', True)
         
-    if cap is not None and cap.isOpened():
-        cap.release()
-        cap = None  
+        # Initialize components
+        self.setup_styles()
+        self.create_ui()
+        self.init_hardware()
+        self.init_models()
+        
+        # Start system threads
+        self.start_threads()
 
-    face_window = tk.Toplevel(root)
-    face_window.title("Face Registration")
-    face_window.geometry("640x580")
-    # Make the window modal to prevent interactions with the main window
-    face_window.transient(root)
-    face_window.grab_set()
+    def setup_styles(self):
+        """Configure UI styles"""
+        style = ttk.Style()
+        default_font = font.nametofont("TkDefaultFont")
+        default_font.configure(size=12)
+        
+        style.configure("Main.TFrame", background="#f0f0f0")
+        style.configure("Status.TLabel", font=("Helvetica", 24, "bold"), background="#f0f0f0")
+        style.configure("Info.TLabel", font=("Helvetica", 18), background="#f0f0f0")
 
-    face_label = tk.Label(face_window)
-    face_label.pack()
+    def create_ui(self):
+        """Create main UI components"""
+        self.main_frame = ttk.Frame(self.root, style="Main.TFrame")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.status_label = ttk.Label(self.main_frame, text="SYSTEM IDLE", style="Status.TLabel")
+        self.status_label.pack(pady=(50, 20))
+        
+        self.info_label = ttk.Label(self.main_frame, text="Waiting for presence detection...", style="Info.TLabel")
+        self.info_label.pack(pady=20)
+        
+        # Camera feed label
+        self.camera_label = ttk.Label(self.main_frame)
+        self.camera_label.pack()
 
-    save_button = tk.Button(face_window, text="Save Face", command=save_face)
-    save_button.pack(pady=10)
+    def init_hardware(self):
+        """Initialize hardware components"""
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(SOLENOID_PIN, GPIO.OUT)
+        GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        
+        self.ultrasonic = UltrasonicSensor(TRIGGER_PIN, ECHO_PIN)
+        self.face_recognition = FaceRecognition()
+        self.cap = None
 
-    close_button = tk.Button(face_window, text="Close", command=close_face_registration)
-    close_button.pack(pady=10)
+    def init_models(self):
+        """Initialize AI models"""
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.wake_word_model = self.load_wake_word_model()
+        self.audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self.transform = T.MelSpectrogram(
+            sample_rate=SAMPLE_RATE, n_mels=64, 
+            n_fft=400, hop_length=160
+        ).to(self.device)
 
-    # Run camera feed in a separate thread
-    thread = Thread(target=open_face_camera)
-    thread.daemon = True
-    thread.start()
+    def load_wake_word_model(self):
+        """Load wake word detection model"""
+        model = torch.jit.load("476998.pth", map_location=self.device)
+        model.eval()
+        return model
 
-    update_face_feed(face_label)
+    def start_threads(self):
+        """Start system threads"""
+        threading.Thread(target=self.monitor_presence, daemon=True).start()
+        threading.Thread(target=self.process_events, daemon=True).start()
 
-def close_face_registration():
-    global cap, face_window, wake_word_detected
-    print(wake_word_detected)
-    if face_window.winfo_exists():
-        face_window.grab_release()  # Release the grab before destroying
-        face_window.destroy()
+    def monitor_presence(self):
+        """Ultrasonic presence detection thread"""
+        while True:
+            if system_state["current_mode"] == "IDLE":
+                distance = self.ultrasonic.get_distance()
+                if distance <= PRESENCE_THRESHOLD:
+                    event_queue.put(("PRESENCE_DETECTED", distance))
+                    time.sleep(1)  # Prevent multiple triggers
+                time.sleep(0.1)
 
-    if cap is not None:
-        cap.release()
-        cap = None  # Avoid using a released camera
-    
-    if not wake_word_detected:
-        # Make sure to restart the audio stream
-        root.after(100, start_audio_stream)  # Small delay to ensure cleanup is complete
-    else:
-        root.after(100, start_camera)  # Small delay to ensure cleanup is complete
+    def process_events(self):
+        """Process system events from queue"""
+        while True:
+            try:
+                event, data = event_queue.get(timeout=0.1)
+                self.root.after(0, self.handle_event, event, data)
+            except queue.Empty:
+                continue
 
-def update_face_feed(face_label):
-    if face_window.winfo_exists():  # Ensure window still exists
-        if cap is not None and cap.isOpened():
-            ret, frame = cap.read()
+    def handle_event(self, event, data):
+        """Handle different system events"""
+        handlers = {
+            "PRESENCE_DETECTED": self.handle_presence,
+            "WAKE_WORD_DETECTED": self.handle_wake_word,
+            "FACE_RECOGNIZED": self.handle_face_recognized,
+            "FACE_NOT_RECOGNIZED": self.handle_face_not_recognized
+        }
+        handlers.get(event, lambda x: None)(data)
+
+    def handle_presence(self, distance):
+        """Handle presence detection"""
+        if system_state["current_mode"] == "IDLE":
+            system_state["current_mode"] = "WAKEUP_LISTENING"
+            self.status_label.config(text="PRESENCE DETECTED")
+            self.info_label.config(text="Say wake word to activate")
+            self.start_audio_stream()
+
+            # Start timeout timer
+            system_state["reset_timer"] = self.root.after(180000, self.timeout_reset)
+
+    def start_audio_stream(self):
+        """Start listening for wake word"""
+        self.audio_stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            callback=self.audio_callback
+        )
+        self.audio_stream.start()
+
+    def audio_callback(self, indata, frames, time, status):
+        """Audio processing callback"""
+        self.audio_buffer[:-frames] = self.audio_buffer[frames:]
+        self.audio_buffer[-frames:] = indata[:, 0]
+        
+        # Wake word detection
+        audio_tensor = torch.from_numpy(self.audio_buffer).to(self.device)
+        mel = self.transform(audio_tensor)
+        prediction = torch.sigmoid(self.wake_word_model(mel.unsqueeze(0)))
+        
+        if prediction.item() > THRESHOLD:
+            self.audio_stream.stop()
+            event_queue.put(("WAKE_WORD_DETECTED", None))
+
+    def handle_wake_word(self, _):
+        """Handle wake word detection"""
+        system_state["current_mode"] = "FACE_RECOGNITION"
+        self.status_label.config(text="FACE RECOGNITION")
+        self.info_label.config(text="Looking at camera...")
+        self.start_camera()
+        self.root.after(3000, self.perform_face_recognition)
+
+    def start_camera(self):
+        """Initialize camera feed"""
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.update_camera_feed()
+
+    def update_camera_feed(self):
+        """Update live camera preview"""
+        if self.cap and system_state["current_mode"] == "FACE_RECOGNITION":
+            ret, frame = self.cap.read()
             if ret:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame)
                 imgtk = ImageTk.PhotoImage(image=img)
-                face_label.imgtk = imgtk
-                face_label.configure(image=imgtk)
+                self.camera_label.imgtk = imgtk
+                self.camera_label.config(image=imgtk)
+            self.root.after(10, self.update_camera_feed)
 
-        if face_window.winfo_exists():  # Double-check before scheduling the next update
-            face_window.after(10, lambda: update_face_feed(face_label))
-
-def save_face():
-    global cap, face_window, wake_word_detected
-    print(wake_word_detected)
-    if cap is not None and cap.isOpened():
-        ret, frame = cap.read()
+    def perform_face_recognition(self):
+        """Perform face recognition check"""
+        ret, frame = self.cap.read()
         if ret:
-            # Ensure directory exists
-            if not os.path.exists("saved_faces"):
-                os.makedirs("saved_faces")
-                
-            face_filename = f"saved_faces/face_1.png"
-            cv2.imwrite(face_filename, frame)
-            print(f"Face saved as {face_filename}")
-            cap.release()
-
-    # Ensure the face_window is properly closed
-    if face_window:
-        face_window.grab_release()  # Release the grab before destroying
-        face_window.destroy()  # Close the registration window
-    
-    if not wake_word_detected:
-        # Make sure to restart the audio stream
-        root.after(100, start_audio_stream)  # Small delay to ensure cleanup is complete
-    else:
-        root.after(100, start_camera)  # Small delay to ensure cleanup is complete
-
-# --- Face Recognition ---
-def perform_face_recognition():
-    global cap, wake_word_detected
-    if cap is not None and cap.isOpened():
-        ret, frame = cap.read()
-        if ret:
-            frame, recognized = face_recognition.recognize_face(frame)
+            frame, recognized = self.face_recognition.recognize_face(frame)
             if recognized:
-                lock_system.unlock()
-                root.after(5000, lock_system.lock)  # Lock after 5 seconds
-            
-            # Show the result in a new window
-            face_result_window = tk.Toplevel(root)
-            face_result_window.title("Face Recognition Result")
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame)
-            imgtk = ImageTk.PhotoImage(image=img)
-            result_label = tk.Label(face_result_window, image=imgtk)
-            result_label.imgtk = imgtk
-            result_label.configure(image=imgtk)
-            result_label.pack()
-            
-    wake_word_detected = False  # Reset wake word flag
+                event_queue.put(("FACE_RECOGNIZED", None))
+            else:
+                event_queue.put(("FACE_NOT_RECOGNIZED", None))
+        self.cleanup_camera()
 
-def display_saved_faces():
-    face_window = tk.Toplevel(root)
-    face_window.title("Saved Faces")
-    
-    if os.path.exists("saved_faces"):
-        for i, filename in enumerate(os.listdir("saved_faces")):
-            face_path = os.path.join("saved_faces", filename)
-            img = Image.open(face_path)
-            img = img.resize((100, 100))
-            imgtk = ImageTk.PhotoImage(img)
-            label = tk.Label(face_window, image=imgtk)
-            label.image = imgtk
-            label.grid(row=i // 5, column=i % 5, padx=5, pady=5)
+    def handle_face_recognized(self, _):
+        """Handle successful face recognition"""
+        system_state["current_mode"] = "UNLOCKED"
+        self.status_label.config(text="ACCESS GRANTED")
+        self.info_label.config(text="Door unlocked for 10 seconds")
+        GPIO.output(SOLENOID_PIN, GPIO.HIGH)
+        system_state["lock_timer"] = self.root.after(10000, self.lock_door)
 
-# --- Main application ---
+    def handle_face_not_recognized(self, _):
+        """Handle failed face recognition"""
+        self.status_label.config(text="ACCESS DENIED")
+        self.info_label.config(text="Face not recognized")
+        self.root.after(5000, self.reset_to_idle)
+
+    def lock_door(self):
+        """Lock the door and reset system"""
+        GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        self.reset_to_idle()
+
+    def timeout_reset(self):
+        """Reset system after inactivity"""
+        if system_state["current_mode"] == "WAKEUP_LISTENING":
+            self.info_label.config(text="No wake word detected")
+            self.root.after(2000, self.reset_to_idle)
+
+    def reset_to_idle(self):
+        """Reset system to initial state"""
+        system_state["current_mode"] = "IDLE"
+        self.status_label.config(text="SYSTEM IDLE")
+        self.info_label.config(text="Waiting for presence detection...")
+        self.cleanup_camera()
+        
+        if self.audio_stream:
+            self.audio_stream.stop()
+
+    def cleanup_camera(self):
+        """Release camera resources"""
+        if self.cap:
+            self.cap.release()
+        self.camera_label.config(image='')
+
 if __name__ == "__main__":
-    # Set sounddevice defaults
-    sd.default.device = 0
-    
-    # Set up Tkinter UI
     root = tk.Tk()
-    root.title("Wake Word Detection with Camera Feed")
-    root.geometry("640x580")
-    
-    # Create main label
-    label = tk.Label(root, text="Waiting for wake word...")
-    label.pack(pady=10)
-    
-    # Camera feed label
-    camera_label = tk.Label(root)
-    camera_label.pack()
-    
-    # Button frame
-    button_frame = tk.Frame(root)
-    button_frame.pack()
-    
-    # Register face button
-    register_button = tk.Button(button_frame, text="Register Face", command=register_face)
-    register_button.pack(side=tk.LEFT, padx=10, pady=10)
-    
-    # Display saved faces button
-    display_button = tk.Button(button_frame, text="Display Saved Faces", command=display_saved_faces)
-    display_button.pack(side=tk.LEFT, padx=10, pady=10)
-    
-    # Set up wake word detection
-    set_callback(audio_callback)
-    
-    # Start audio stream in a separate thread
-    Thread(target=start_audio_stream, daemon=True).start()
-    
-    try:
-        root.mainloop()
-    finally:
-        if cap is not None and cap.isOpened():
-            cap.release()
-        lock_system.cleanup()
+    app = DoorLockApp(root)
+    root.mainloop()
+    GPIO.cleanup()
