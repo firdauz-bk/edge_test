@@ -21,7 +21,7 @@ system_state = {
 event_queue = queue.Queue()
 
 # GPIO pins for door lock solenoid
-SOLENOID_PIN = 18
+SOLENOID_PIN = 14
 
 # Constants
 PRESENCE_THRESHOLD = 100  # 1 meter in cm
