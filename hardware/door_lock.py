@@ -2,59 +2,40 @@ import RPi.GPIO as GPIO
 import time
 
 class DoorLock:
-    def __init__(self, relay_pin=14):
-        self.RELAY_PIN = relay_pin
-        self.setup()
+    def __init__(self, solenoid_pin=14):
+        """
+        Initialize the door lock controller
         
-    def setup(self):
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.RELAY_PIN, GPIO.OUT)
-        GPIO.output(self.RELAY_PIN, GPIO.LOW)  # Start in locked state
-        print("Door Lock System Initialized")
+        Args:
+            solenoid_pin (int): GPIO pin connected to the door lock solenoid
+        """
+        self.SOLENOID_PIN = solenoid_pin
+        self.setup_gpio()
         
-    def lock(self):
-        print("Locking door...")
-        GPIO.output(self.RELAY_PIN, GPIO.LOW)
-        print("Door Locked")
+    def setup_gpio(self):
+        """Setup GPIO pins for the door lock solenoid"""
+        # Set GPIO mode if not already set
+        if GPIO.getmode() is None:
+            GPIO.setmode(GPIO.BCM)
+            
+        # Set up solenoid pin
+        GPIO.setup(self.SOLENOID_PIN, GPIO.OUT)
+        GPIO.output(self.SOLENOID_PIN, GPIO.LOW)  # Ensure door is locked initially
         
     def unlock(self):
-        print("Unlocking door...")
-        GPIO.output(self.RELAY_PIN, GPIO.HIGH)
-        print("Door Unlocked")
+        """Unlock the door by activating the solenoid"""
+        GPIO.output(self.SOLENOID_PIN, GPIO.HIGH)
+        print("Door unlocked")
         
-    def test_cycle(self):
-        print("Running a test cycle...")
-        self.lock()
-        time.sleep(2)
-        
-        self.unlock()
-        time.sleep(5)
-        
-        self.lock()
-        print("Test cycle complete")
+    def lock(self):
+        """Lock the door by deactivating the solenoid"""
+        GPIO.output(self.SOLENOID_PIN, GPIO.LOW)
+        print("Door locked")
         
     def cleanup(self):
-        self.lock()  # Ensure door is locked when shutting down
-        GPIO.cleanup(self.RELAY_PIN)
-        print("Door lock GPIO cleanup complete")
-
-if __name__ == "__main__":
-    lock_system = DoorLock()
-    try:
-        while True:
-            command = input("\nEnter Command (unlock/lock/test/exit): ").lower()
-            if command == "unlock":
-                lock_system.unlock()
-            elif command == "lock":
-                lock_system.lock()
-            elif command == "test":
-                lock_system.test_cycle()
-            elif command == "exit":
-                break
-            else:
-                print("Invalid command")
-                
-    except KeyboardInterrupt:
-        print("\nProgram stopped")
-    finally:
-        lock_system.cleanup()
+        """Clean up GPIO pins"""
+        try:
+            GPIO.cleanup(self.SOLENOID_PIN)
+        except:
+            # If already cleaned up, just pass
+            pass

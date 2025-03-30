@@ -1,10 +1,18 @@
 import tkinter as tk
-from tkinter import ttk, font
+from tkinter import ttk, font, simpledialog
 import threading
 import time
 import queue
 import RPi.GPIO as GPIO
+import os
+import cv2
+from PIL import Image, ImageTk
+
+
 from hardware.ultrasonic import UltrasonicSensor
+from software.wake_word import WakeWordDetector
+from software.face_recognition import FaceRecognitionSystem
+from hardware.door_lock import DoorLock
 
 # Global variables for system state
 system_state = {
@@ -133,18 +141,30 @@ class DoorLockApp:
         
     def init_hardware(self):
         """Initialize hardware components"""
-        # Set up GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(SOLENOID_PIN, GPIO.OUT)
-        GPIO.output(SOLENOID_PIN, GPIO.LOW)  # Ensure door is locked initially
+        # Initialize door lock
+        self.door_lock = DoorLock(solenoid_pin=18)
         
         # Initialize ultrasonic sensor
         self.ultrasonic = UltrasonicSensor(trigger_pin=17, echo_pin=27)
         
+        # Initialize wake word detector
+        self.wake_word_detector = WakeWordDetector(
+            model_path="476998.pth",  # Adjust path as needed
+            threshold=0.78,
+            event_queue=event_queue
+        )
+        
+        # Initialize face recognition system
+        self.face_recognition = FaceRecognitionSystem(
+            saved_faces_dir="saved_faces",
+            recognition_threshold=0.3,
+            event_queue=event_queue
+        )
+        
         # Start ultrasonic sensor thread
         self.ultrasonic_thread = threading.Thread(target=self.monitor_presence, daemon=True)
         self.ultrasonic_thread.start()
-        
+
     def monitor_presence(self):
         """Thread function to monitor presence using ultrasonic sensor"""
         presence_detected = False
@@ -205,7 +225,7 @@ class DoorLockApp:
             self.info_label.config(text=f"Say wake word to activate face recognition\nDistance: {distance:.1f} cm")
             
             # Start the wakeup word listener (to be implemented)
-            self.start_wakeup_listener()
+            self.wake_word_detector.start_listening()
             
             # Start timeout timer for reset
             if system_state["reset_timer"]:
@@ -237,9 +257,48 @@ class DoorLockApp:
     
     def start_face_recognition(self):
         """Start the face recognition process"""
-        # This will be implemented later
-        # For now, we'll simulate this with a button press
-        pass
+        # Activate the camera display
+        self.camera_frame.pack(pady=20)
+        self.camera_active = True
+        
+        # Start face recognition system
+        self.face_recognition.start_camera()
+        
+        # Start camera feed updates
+        self.update_camera_feed()
+
+    def update_camera_feed(self):
+        """Update the camera feed on the UI"""
+        if not self.camera_active:
+            return
+            
+        # Get frame from face recognition system (non-blocking)
+        if hasattr(self.face_recognition, 'cap') and self.face_recognition.cap:
+            cap = self.face_recognition.cap
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    # Convert to RGB for display
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    # Convert to PIL Image
+                    img = Image.fromarray(frame)
+                    # Convert to PhotoImage
+                    imgtk = ImageTk.PhotoImage(image=img)
+                    # Update label
+                    self.camera_label.imgtk = imgtk
+                    self.camera_label.configure(image=imgtk)
+        
+        # Schedule next update if still active
+        if self.camera_active:
+            self.camera_update_id = self.root.after(33, self.update_camera_feed)  # ~30fps
+    
+    def stop_camera_feed(self):
+        """Stop the camera feed"""
+        self.camera_active = False
+        if self.camera_update_id:
+            self.root.after_cancel(self.camera_update_id)
+            self.camera_update_id = None
+        self.camera_frame.pack_forget()
     
     def handle_face_recognized(self, user_name):
         """Handle successful face recognition"""
@@ -261,6 +320,8 @@ class DoorLockApp:
     def handle_face_not_recognized(self):
         """Handle failed face recognition"""
         system_state["current_mode"] = "FACE_NOT_RECOGNIZED"
+        
+        self.stop_camera_feed()
         
         self.status_label.config(text="ACCESS DENIED")
         self.info_label.config(text="Face Not Recognized")

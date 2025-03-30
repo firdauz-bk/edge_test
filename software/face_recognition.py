@@ -1,241 +1,259 @@
-import cv2
 import os
+import cv2
 import numpy as np
 import insightface
 from insightface.app import FaceAnalysis
 from scipy.spatial.distance import cosine
-import json
+import threading
+import queue
 import time
 
-class FaceRecognition:
-    def __init__(self, faces_dir="saved_faces"):
-        self.faces_dir = faces_dir
-        self.registry_file = os.path.join(faces_dir, "registry.json")
+class FaceRecognitionSystem:
+    def __init__(self, saved_faces_dir="saved_faces", recognition_threshold=0.3, event_queue=None):
+        """
+        Initialize the face recognition system
         
-        # Create faces directory if it doesn't exist
-        if not os.path.exists(faces_dir):
-            os.makedirs(faces_dir)
+        Args:
+            saved_faces_dir (str): Directory to store registered face images
+            recognition_threshold (float): Threshold for face recognition (lower is stricter)
+            event_queue (queue.Queue): Queue for sending events to main thread
+        """
+        self.saved_faces_dir = saved_faces_dir
+        self.recognition_threshold = recognition_threshold
+        self.event_queue = event_queue
+        self.face_database = {}  # Will store name -> embedding pairs
+        
+        # Create directory for saved faces if it doesn't exist
+        if not os.path.exists(saved_faces_dir):
+            os.makedirs(saved_faces_dir)
             
-        # Initialize face analysis model
+        # Initialize InsightFace
         self.app = FaceAnalysis(name="buffalo_l", providers=['CPUExecutionProvider'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
-        print("Face recognition model loaded successfully")
+        print("Face recognition model loaded successfully!")
         
-        # Initialize camera
-        self.camera = None
-        self.resolution = (640, 480)
+        # Camera settings
+        self.camera_resolution = (640, 480)
+        self.cap = None
+        self.is_running = False
+        self.camera_thread = None
         
-        # Load registered faces
-        self.load_registry()
-    
-    def load_registry(self):
-        """Load the registry of saved faces"""
-        self.face_registry = []
+        # Load saved faces
+        self.load_face_database()
         
-        # Check if registry file exists
-        if os.path.exists(self.registry_file):
-            try:
-                with open(self.registry_file, 'r') as f:
-                    self.face_registry = json.load(f)
-            except Exception as e:
-                print(f"Error loading face registry: {e}")
+    def load_face_database(self):
+        """Load and process all saved faces from the directory"""
+        self.face_database = {}
         
-        # For backward compatibility, scan the directory for any unregistered faces
-        for filename in os.listdir(self.faces_dir):
-            if filename.endswith(('.jpg', '.png')) and not filename.startswith('.'):
-                face_path = os.path.join(self.faces_dir, filename)
-                
-                # Check if this face is already in the registry
-                if not any(entry['path'] == face_path for entry in self.face_registry):
-                    # Extract name from filename (remove extension)
-                    name = os.path.splitext(filename)[0]
-                    if name.startswith("face_"):
-                        name = f"Person {name.split('_')[1]}"
+        if not os.path.exists(self.saved_faces_dir):
+            return
+            
+        for filename in os.listdir(self.saved_faces_dir):
+            if filename.endswith(".png") or filename.endswith(".jpg"):
+                # Extract name from filename (face_name.png)
+                name = os.path.splitext(filename)[0]
+                if '_' in name:
+                    name = name.split('_', 1)[1]  # Remove 'face_' prefix if present
                     
-                    # Add to registry
-                    self.face_registry.append({
-                        'name': name,
-                        'path': face_path
-                    })
-            
-        # Save updated registry
-        self.save_registry()
+                # Load and process face
+                face_path = os.path.join(self.saved_faces_dir, filename)
+                try:
+                    face_img = cv2.imread(face_path)
+                    faces = self.app.get(face_img)
+                    
+                    if faces:
+                        # Store the face embedding
+                        self.face_database[name] = faces[0]['embedding']
+                        print(f"Loaded face for {name}")
+                    else:
+                        print(f"No face found in {filename}")
+                except Exception as e:
+                    print(f"Error loading face {filename}: {e}")
         
-        print(f"Loaded {len(self.face_registry)} registered faces")
-    
-    def save_registry(self):
-        """Save the face registry to file"""
-        try:
-            with open(self.registry_file, 'w') as f:
-                json.dump(self.face_registry, f, indent=2)
-        except Exception as e:
-            print(f"Error saving face registry: {e}")
-    
+        print(f"Loaded {len(self.face_database)} faces into database")
+        
     def start_camera(self):
-        """Robust camera initialization"""
-        if self.camera is None or not self.camera.isOpened():
-            self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)  # Explicitly use V4L2 backend
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            # Wait for camera to initialize
-            for _ in range(10):  # Attempt 10 frames to warm up
-                self.camera.read()
-                time.sleep(0.1)
-    
+        """Start the camera for face recognition"""
+        if self.is_running:
+            return
+            
+        # Initialize camera
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_resolution[0])
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_resolution[1])
+        
+        if not self.cap.isOpened():
+            print("Error: Could not open camera!")
+            return
+            
+        self.is_running = True
+        
+        # Start camera thread
+        self.camera_thread = threading.Thread(target=self.camera_loop)
+        self.camera_thread.daemon = True
+        self.camera_thread.start()
+        
     def stop_camera(self):
-        """Full camera release with cleanup"""
-        if self.camera is not None:
-            if self.camera.isOpened():
-                self.camera.release()
-            self.camera = None  # Critical for proper reinitialization
-        cv2.destroyAllWindows()
-    
-    def get_frame(self):
-        """Get a valid frame from the camera"""
-        if self.camera is None or not self.camera.isOpened():
-            self.start_camera()  # Ensure camera is always active
+        """Stop the camera"""
+        self.is_running = False
         
-        if self.camera.isOpened():
-            ret, frame = self.camera.read()
-            return frame if ret else None
-        return None
-    
-    def convert_to_rgb(self, frame):
-        """Convert BGR frame to RGB"""
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    def register_face(self, frame, name):
-        """Register a new face"""
-        # Detect faces in the frame
+        if self.camera_thread:
+            self.camera_thread.join(timeout=1.0)
+            
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+            
+    def camera_loop(self):
+        """Main camera processing loop"""
+        recognition_frames = 0
+        max_recognition_frames = 50  # Try recognition for ~5 seconds at 10fps
+        recognized_name = None
+        
+        while self.is_running and self.cap and self.cap.isOpened():
+            # Read frame
+            ret, frame = self.cap.read()
+            if not ret:
+                print("Error: Failed to capture frame!")
+                break
+                
+            # Process for face recognition
+            processed_frame, name = self.recognize_face(frame)
+            
+            # If face recognized, count it
+            if name:
+                if recognized_name is None:
+                    recognized_name = name
+                    print(f"Face recognized: {name}")
+                elif recognized_name == name:
+                    # Same person recognized consistently
+                    recognition_frames += 1
+                    
+                    # If recognized consistently, trigger success event
+                    if recognition_frames >= 3:  # Require 3 consistent recognitions
+                        if self.event_queue:
+                            self.event_queue.put(("FACE_RECOGNIZED", name))
+                        self.is_running = False
+                        break
+            else:
+                recognition_frames = 0
+                
+            # Check if we've exceeded max frames without consistent recognition
+            if max_recognition_frames <= 0:
+                if self.event_queue:
+                    self.event_queue.put(("FACE_NOT_RECOGNIZED", None))
+                self.is_running = False
+                break
+                
+            max_recognition_frames -= 1
+            time.sleep(0.1)  # Limit to ~10fps to reduce CPU usage
+            
+        self.stop_camera()
+        
+    def recognize_face(self, frame):
+        """
+        Recognize faces in a frame
+        
+        Args:
+            frame: Camera frame to process
+            
+        Returns:
+            tuple: (processed frame with annotations, recognized name or None)
+        """
+        if not self.face_database:
+            print("No faces in database!")
+            return frame, None
+            
+        # Get faces from frame
         faces = self.app.get(frame)
-        if not faces:
-            print("No face detected in the frame")
+        
+        recognized_name = None
+        
+        if faces:
+            # Process each detected face
+            for face in faces:
+                embedding = face['embedding']
+                bbox = face['bbox'].astype(int)
+                
+                # Compare with saved faces
+                best_match = None
+                lowest_distance = 1.0  # Initialize with maximum possible cosine distance
+                
+                for name, saved_embedding in self.face_database.items():
+                    distance = cosine(embedding, saved_embedding)
+                    
+                    if distance < lowest_distance:
+                        lowest_distance = distance
+                        best_match = name
+                
+                # Draw bounding box
+                if lowest_distance < self.recognition_threshold:
+                    # Face recognized
+                    cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{best_match}: {lowest_distance:.2f}", 
+                               (bbox[0], bbox[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.5, (0, 255, 0), 2)
+                    recognized_name = best_match
+                else:
+                    # Face not recognized
+                    cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
+                    cv2.putText(frame, f"Unknown: {lowest_distance:.2f}", 
+                               (bbox[0], bbox[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.5, (0, 0, 255), 2)
+        
+        return frame, recognized_name
+        
+    def register_face(self, name):
+        """
+        Register a new face with the given name
+        
+        Args:
+            name (str): Name for the new face
+            
+        Returns:
+            bool: True if registration successful, False otherwise
+        """
+        if not self.cap:
+            self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_resolution[0])
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_resolution[1])
+            
+        if not self.cap.isOpened():
+            print("Error: Could not open camera for registration!")
             return False
+            
+        # Wait for camera to stabilize
+        time.sleep(0.5)
         
-        # Use only the first face if multiple are detected
-        face = faces[0]
-        
-        # Create a unique filename
-        face_id = len(self.face_registry) + 1
-        filename = f"{name.replace(' ', '_')}_{face_id}.jpg"
-        face_path = os.path.join(self.faces_dir, filename)
-        
-        # Save the face image
-        cv2.imwrite(face_path, frame)
-        
-        # Add to registry
-        self.face_registry.append({
-            'name': name,
-            'path': face_path
-        })
-        
-        # Save updated registry
-        self.save_registry()
-        
-        print(f"Registered new face: {name}")
-        return True
-    
-    def get_registered_faces(self):
-        """Get list of registered faces"""
-        return self.face_registry
-    
-    def recognize_person(self):
-        """Recognize a person from camera feed"""
-        frame = self.get_frame()
-        if frame is None:
-            return None, None, False
-        
-        # If no faces are registered, can't recognize anyone
-        if not self.face_registry:
-            print("No faces registered in the system")
-            return frame, None, False
-        
-        # Detect face in current frame
-        faces = self.app.get(frame)
-        if not faces:
-            print("No face detected in camera feed")
-            return frame, None, False
-        
-        # Get embedding for detected face
-        current_face = faces[0]
-        current_embedding = current_face['embedding']
-        
-        # Draw bounding box around detected face
-        bbox = current_face['bbox'].astype(int)
-        cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
-        
-        # Check against registered faces
-        best_match = None
-        best_score = 1.0  # Lower is better for cosine distance
-        threshold = 0.3  # Threshold for face recognition
-        
-        for face_entry in self.face_registry:
-            # Load the registered face
-            face_img = cv2.imread(face_entry['path'])
-            if face_img is None:
+        # Capture multiple frames (to get a good one)
+        success = False
+        for _ in range(10):
+            ret, frame = self.cap.read()
+            if not ret:
                 continue
                 
-            # Detect face in the registered image
-            saved_faces = self.app.get(face_img)
-            if not saved_faces:
-                continue
+            # Check for faces
+            faces = self.app.get(frame)
+            
+            if faces:
+                # Save the face image
+                face_filename = f"{self.saved_faces_dir}/face_{name}.png"
+                cv2.imwrite(face_filename, frame)
                 
-            # Get embedding for registered face
-            saved_embedding = saved_faces[0]['embedding']
+                # Add to database
+                self.face_database[name] = faces[0]['embedding']
+                print(f"Face registered: {name}")
+                success = True
+                break
+                
+            time.sleep(0.1)
             
-            # Calculate similarity
-            similarity = cosine(current_embedding, saved_embedding)
-            print(f"Similarity with {face_entry['name']}: {similarity:.4f}")
-            
-            # Update best match
-            if similarity < best_score:
-                best_score = similarity
-                best_match = face_entry
+        # Release camera
+        self.cap.release()
+        self.cap = None
         
-        # If a match is found
-        if best_match and best_score < threshold:
-            # Draw green bounding box for recognized face
-            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-            
-            # Add name label
-            cv2.putText(frame, best_match['name'], (bbox[0], bbox[1] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-            
-            print(f"Recognized: {best_match['name']} (score: {best_score:.4f})")
-            return frame, best_match['name'], True
-        else:
-            # Add "Unknown" label
-            cv2.putText(frame, "Unknown", (bbox[0], bbox[1] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-            
-            print(f"Face not recognized. Best score: {best_score:.4f}")
-            return frame, None, False
-    
+        return success
+        
     def cleanup(self):
         """Clean up resources"""
         self.stop_camera()
-
-# Test function
-def main():
-    face_recognition = FaceRecognition()
-    
-    # Start camera
-    face_recognition.start_camera()
-    
-    try:
-        # Display camera feed with face recognition
-        while True:
-            frame, name, recognized = face_recognition.recognize_person()
-            if frame is not None:
-                # Display result
-                cv2.imshow("Face Recognition", frame)
-                
-                # Exit on 'q' press
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-    finally:
-        face_recognition.cleanup()
-        cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()

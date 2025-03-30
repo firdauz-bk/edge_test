@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
+import torchaudio
 import torchaudio.transforms as T
 import numpy as np
 import sounddevice as sd
 import threading
+import queue
 import time
 
 class WakeWordModel(nn.Module):
+    """Neural network model for wake word detection"""
     def __init__(self):
         super(WakeWordModel, self).__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
@@ -34,22 +37,30 @@ class WakeWordModel(nn.Module):
         return x
 
 class WakeWordDetector:
-    def __init__(self, model_path="476998.pth", threshold=0.78):
-        # Audio configuration
+    def __init__(self, model_path="476998.pth", threshold=0.78, event_queue=None):
+        """
+        Initialize the wake word detector
+        
+        Args:
+            model_path (str): Path to the trained model weights
+            threshold (float): Confidence threshold for detection
+            event_queue (queue.Queue): Queue for sending events to main thread
+        """
         self.SAMPLE_RATE = 16000
         self.DURATION = 1.0
         self.BUFFER_SIZE = int(self.SAMPLE_RATE * self.DURATION)
         self.THRESHOLD = threshold
+        self.event_queue = event_queue
         
         # Initialize device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Load model
+        # Initialize model
         self.model = WakeWordModel().to(self.device)
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self.model.eval()
         
-        # Set up mel spectrogram transform
+        # Audio transform
         self.transform = T.MelSpectrogram(
             sample_rate=self.SAMPLE_RATE, 
             n_mels=64, 
@@ -62,99 +73,76 @@ class WakeWordDetector:
         
         # Audio stream
         self.audio_stream = None
-        self.running = False
-        self.callback_fn = None
-    
-    def audio_callback(self, indata, frames, time, status):
-        """Callback function for audio stream"""
-        if status:
-            print(f"Audio callback error: {status}")
-            
-        # Update the buffer
-        self.audio_buffer[:-frames] = self.audio_buffer[frames:]
-        self.audio_buffer[-frames:] = indata[:, 0]
+        self.is_listening = False
         
-        # Detect wake word
-        prediction = self.detect_wake_word(self.audio_buffer)
-        print(f"Wake word probability: {prediction:.4f}")
-        
-        # If wake word detected, trigger callback
-        if prediction > self.THRESHOLD and self.callback_fn:
-            self.stop()  # Stop listening
-            self.callback_fn()  # Trigger callback
-    
     def process_audio(self, audio_data):
-        """Process audio data to create mel spectrogram"""
+        """Process audio data to prepare for model input"""
         waveform = torch.tensor(audio_data, dtype=torch.float32).to(self.device)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)  # Ensure batch dimension
         mel_spec = self.transform(waveform).unsqueeze(0)  # Add channel dimension for Conv2D
         return mel_spec
-    
+        
     def detect_wake_word(self, audio_data):
-        """Detect wake word in audio data"""
+        """Run audio through the model to detect wake word"""
         mel_spec = self.process_audio(audio_data)
         with torch.no_grad():
             output = self.model(mel_spec)
             return torch.sigmoid(output).item()  # Sigmoid for probability
-    
-    def start(self, callback=None):
-        """Start wake word detection"""
-        if sd._initialized:  # Check if PortAudio is already initialized
-            sd._terminate()
-        sd._initialize()  # Force fresh initialization
-        
-        if self.running:
+            
+    def audio_callback(self, indata, frames, time, status):
+        """Callback for audio stream - processes incoming audio"""
+        if status:
+            print(f"Audio callback error: {status}")
             return
             
-        self.callback_fn = callback
-        self.running = True
+        # Update buffer with new audio data
+        self.audio_buffer[:-frames] = self.audio_buffer[frames:]
+        self.audio_buffer[-frames:] = indata[:, 0]
         
-        try:
-            # Set default sound device if not specified
-            sd.default.device = 0
+        # Run detection on buffer
+        prediction = self.detect_wake_word(self.audio_buffer)
+        
+        # Debug print every second
+        if frames == self.BUFFER_SIZE:
+            print(f"Wake word probability: {prediction:.4f}")
             
-            # Start the audio stream
+        # If prediction exceeds threshold, trigger wake word event
+        if prediction > self.THRESHOLD:
+            print("Wake word detected!")
+            self.stop_listening()
+            
+            # Send event to main thread
+            if self.event_queue:
+                self.event_queue.put(("WAKEUP_WORD_DETECTED", None))
+                
+    def start_listening(self):
+        """Start the audio stream for wake word detection"""
+        if self.is_listening:
+            return
+            
+        try:
             self.audio_stream = sd.InputStream(
-                callback=self.audio_callback, 
-                channels=1, 
-                samplerate=self.SAMPLE_RATE, 
-                blocksize=self.BUFFER_SIZE
+                callback=self.audio_callback,
+                channels=1,
+                samplerate=self.SAMPLE_RATE,
+                blocksize=int(self.SAMPLE_RATE * 0.1)  # Process in smaller chunks (100ms)
             )
             self.audio_stream.start()
-            print("Wake word detection started")
+            self.is_listening = True
+            print("Wake word detector listening...")
         except Exception as e:
             print(f"Error starting audio stream: {e}")
-            self.running = False
-    
-    def stop(self):
-        """Full cleanup of audio resources"""
+            
+    def stop_listening(self):
+        """Stop the audio stream"""
         if self.audio_stream is not None:
-            if self.audio_stream.active:
-                self.audio_stream.stop()
+            self.audio_stream.stop()
             self.audio_stream.close()
-        self.running = False
-        self.audio_stream = None
-        
-
-# Test function
-def main():
-    detector = WakeWordDetector()
-    
-    def on_wake_word():
-        print("Wake word detected!")
-        detector.stop()
-    
-    detector.start(callback=on_wake_word)
-    
-    try:
-        # Run for 30 seconds
-        for _ in range(30):
-            time.sleep(1)
-            if not detector.running:
-                break
-    finally:
-        detector.stop()
-
-if __name__ == "__main__":
-    main()
+            self.audio_stream = None
+            self.is_listening = False
+            print("Wake word detector stopped.")
+            
+    def cleanup(self):
+        """Clean up resources"""
+        self.stop_listening()
