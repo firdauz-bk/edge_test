@@ -8,9 +8,9 @@ import torch
 import sounddevice as sd
 import torchaudio.transforms as T
 
-from wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
-from face_recognition import FaceRecognition
-from door_lock import DoorLock
+from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
+from software.face_recognition import FaceRecognition
+from hardware.door_lock import DoorLock
 
 # Global variables
 wake_word_detected = False
