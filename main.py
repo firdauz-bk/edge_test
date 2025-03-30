@@ -4,7 +4,7 @@ import threading
 import time
 import queue
 import RPi.GPIO as GPIO
-from ultrasonic import UltrasonicSensor
+from hardware.ultrasonic import UltrasonicSensor
 import cv2
 from PIL import Image, ImageTk
 import torch
