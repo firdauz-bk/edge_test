@@ -1,4 +1,5 @@
 import tkinter as tk
+import threading
 from threading import Thread
 import cv2
 from PIL import Image, ImageTk
@@ -64,7 +65,7 @@ def init_ultrasonic():
     ultrasonic_sensor = UltrasonicSensor(trigger_pin=17, echo_pin=27)
     
     # Start the monitoring thread
-    ultrasonic_thread = Thread.Thread(target=monitor_presence, daemon=True)
+    ultrasonic_thread = threading.Thread(target=monitor_presence, daemon=True)
     ultrasonic_thread.start()
 
 # Add the monitoring function
