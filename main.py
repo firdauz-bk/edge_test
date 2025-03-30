@@ -190,7 +190,7 @@ def perform_face_recognition():
             frame, recognized = face_recognition.recognize_face(frame)
             if recognized:
                 lock_system.unlock()
-                root.after(20000, lock_system.lock)  # Lock after 20 seconds
+                root.after(5000, lock_system.lock)  # Lock after 5 seconds
             
             # Show the result in a new window
             face_result_window = tk.Toplevel(root)
