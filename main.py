@@ -15,17 +15,6 @@ from software.face_recognition import FaceRecognition
 from hardware.door_lock import DoorLock
 from hardware.ultrasonic import UltrasonicSensor
 
-# Global variables for system state
-system_state = {
-    "current_mode": "IDLE",  # IDLE, WAKEUP_LISTENING, FACE_RECOGNITION, UNLOCKED
-    "person_detected": False,
-    "face_recognized": False,
-    "registered_users": {},  # Will store face encodings with names
-    "current_user": "",
-    "reset_timer": None,
-    "lock_timer": None
-}
-
 # Communication queue between threads
 event_queue = queue.Queue()
 
@@ -47,7 +36,9 @@ THRESHOLD = 0.78
 PRESENCE_THRESHOLD = 100  # 1 meter in cm
 WAKEUP_TIMEOUT = 180  # 3 minutes in seconds
 DOOR_UNLOCK_TIME = 10  # 10 seconds
-ultrasonic_active = True
+# Add global variables
+presence_detected = False
+ultrasonic_sensor = None
 
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,6 +58,7 @@ lock_system = DoorLock()
 # Camera settings
 webcam_resolution = (640, 480)
 
+# Initialize the ultrasonic sensor in your main function
 def init_ultrasonic():
     global ultrasonic_sensor
     ultrasonic_sensor = UltrasonicSensor(trigger_pin=17, echo_pin=27)
@@ -75,63 +67,42 @@ def init_ultrasonic():
     ultrasonic_thread = Thread.Thread(target=monitor_presence, daemon=True)
     ultrasonic_thread.start()
 
-def monitor_presence(self):
-    """Thread function to monitor presence using ultrasonic sensor"""
-    presence_detected = False
-    consecutive_detections = 0  # Track consecutive detections to filter noise
+# Add the monitoring function
+def monitor_presence():
+    global presence_detected
+    consecutive_detections = 0
     
     while True:
-        if system_state["current_mode"] == "IDLE":
+        if not presence_detected and not wake_word_detected:
             try:
-                distance = self.ultrasonic.get_distance()
+                distance = ultrasonic_sensor.get_distance()
                 
                 # Check if someone is within detection range (1m = 100cm)
-                if distance <= PRESENCE_THRESHOLD:  # PRESENCE_THRESHOLD should be 100
+                if distance <= 100:  # 1 meter threshold
                     consecutive_detections += 1
                     
-                    # Require a few consecutive detections to filter out noise
-                    if consecutive_detections >= 3 and not presence_detected:
+                    # Require 3 consecutive detections to filter noise
+                    if consecutive_detections >= 3:
                         presence_detected = True
                         print(f"Presence detected at {distance:.1f} cm")
                         
-                        # Put event in queue to handle in main thread
-                        event_queue.put(("PRESENCE_DETECTED", distance))
-                        
-                        # No need to keep measuring - wait until system resets
-                        # This will effectively pause the ultrasonic detection
-                        # until the system returns to IDLE state
-                        consecutive_detections = 0
+                        # Start wake word detection
+                        Thread(target=start_audio_stream, daemon=True).start()
                 else:
-                    consecutive_detections = 0  # Reset consecutive detections count
-            
+                    consecutive_detections = 0
             except Exception as e:
                 print(f"Error in ultrasonic sensor: {e}")
-                time.sleep(1)  # Wait before trying again
-                
+            
             # Small sleep to prevent CPU overuse
             time.sleep(0.1)
         else:
-            # If not in IDLE mode, just wait and check periodically
-            presence_detected = False
-            consecutive_detections = 0
-            time.sleep(0.5)
-
-def handle_presence_detected(self, distance):
-    """Handle presence detection event"""
-    if system_state["current_mode"] == "IDLE":
-        system_state["current_mode"] = "WAKEUP_LISTENING"
-        system_state["person_detected"] = True
-        
-        self.status_label.config(text="PRESENCE DETECTED")
-        self.info_label.config(text="Say wake word to activate face recognition")
-        
-        # Start the wakeup word listener
-        self.start_wakeup_listener()
-        
-        # Start timeout timer for reset
-        if system_state["reset_timer"]:
-            self.root.after_cancel(system_state["reset_timer"])
-        system_state["reset_timer"] = self.root.after(WAKEUP_TIMEOUT * 1000, self.timeout_reset)
+            # Reset when appropriate
+            if not wake_word_detected:
+                time.sleep(0.5)
+            else:
+                # Reset presence detection after wake word process completes
+                presence_detected = False
+                time.sleep(0.5)
 
 def start_wakeup_listener(self):
     """Start the wake word detection thread"""
@@ -331,6 +302,8 @@ def display_saved_faces():
 
 # --- Main application ---
 if __name__ == "__main__":
+
+    init_ultrasonic()
     # Set sounddevice defaults
     sd.default.device = 0
     
