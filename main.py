@@ -1,5 +1,4 @@
 import tkinter as tk
-import threading
 from threading import Thread
 import cv2
 from PIL import Image, ImageTk
@@ -8,16 +7,10 @@ import numpy as np
 import torch
 import sounddevice as sd
 import torchaudio.transforms as T
-import time
-import queue
 
 from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
 from software.face_recognition import FaceRecognition
 from hardware.door_lock import DoorLock
-from hardware.ultrasonic import UltrasonicSensor
-
-# Communication queue between threads
-event_queue = queue.Queue()
 
 # Global variables
 wake_word_detected = False
@@ -31,15 +24,6 @@ DURATION = 1.0
 BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
 audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
 THRESHOLD = 0.78
-
-
-# Constants
-PRESENCE_THRESHOLD = 100  # 1 meter in cm
-WAKEUP_TIMEOUT = 180  # 3 minutes in seconds
-DOOR_UNLOCK_TIME = 10  # 10 seconds
-# Add global variables
-presence_detected = False
-ultrasonic_sensor = None
 
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -58,72 +42,6 @@ lock_system = DoorLock()
 
 # Camera settings
 webcam_resolution = (640, 480)
-
-# Initialize the ultrasonic sensor in your main function
-def init_ultrasonic():
-    global ultrasonic_sensor
-    ultrasonic_sensor = UltrasonicSensor(trigger_pin=17, echo_pin=27)
-    
-    # Start the monitoring thread
-    ultrasonic_thread = threading.Thread(target=monitor_presence, daemon=True)
-    ultrasonic_thread.start()
-
-# Add the monitoring function
-def monitor_presence():
-    global presence_detected
-    consecutive_detections = 0
-    
-    while True:
-        if not presence_detected and not wake_word_detected:
-            try:
-                distance = ultrasonic_sensor.get_distance()
-                
-                # Check if someone is within detection range (1m = 100cm)
-                if distance <= 100:  # 1 meter threshold
-                    consecutive_detections += 1
-                    
-                    # Require 3 consecutive detections to filter noise
-                    if consecutive_detections >= 3:
-                        presence_detected = True
-                        print(f"Presence detected at {distance:.1f} cm")
-                        
-                        # Start wake word detection
-                        Thread(target=start_audio_stream, daemon=True).start()
-                else:
-                    consecutive_detections = 0
-            except Exception as e:
-                print(f"Error in ultrasonic sensor: {e}")
-            
-            # Small sleep to prevent CPU overuse
-            time.sleep(0.1)
-        else:
-            # Reset when appropriate
-            if not wake_word_detected:
-                time.sleep(0.5)
-            else:
-                # Reset presence detection after wake word process completes
-                presence_detected = False
-                time.sleep(0.5)
-
-def start_wakeup_listener(self):
-    """Start the wake word detection thread"""
-    # Here we'll enable the microphone for wake word detection
-    # This should start your existing wake word detection code
-    from threading import Thread
-    from software.wake_word import start_audio_stream, set_callback
-    
-    # Set up the callback function that will be called when audio is processed
-    def audio_callback(indata, frames, time, status):
-        # This will be handled by your wake_word.py implementation
-        pass
-    
-    # Set the callback and start the audio stream
-    set_callback(audio_callback)
-    
-    # Start audio stream in a separate thread
-    Thread(target=start_audio_stream, daemon=True).start()
-    
-    print("Wake word detection activated")
 
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
@@ -237,24 +155,6 @@ def update_face_feed(face_label):
         if face_window.winfo_exists():  # Double-check before scheduling the next update
             face_window.after(10, lambda: update_face_feed(face_label))
 
-def close_face_registration():
-    global cap, face_window, wake_word_detected
-    print(wake_word_detected)
-    if face_window.winfo_exists():
-        face_window.destroy()
-
-    if cap is not None:
-        cap.release()
-        cv2.destroyAllWindows()
-        cap = None  # Avoid using a released camera
-    
-    if not wake_word_detected:
-        start_audio_stream()  # Resume audio detection
-    else:
-        start_camera()
-        
-    root.deiconify()  # Show the main window again
-
 def save_face():
     global cap, face_window, wake_word_detected
     print(wake_word_detected)
@@ -321,8 +221,6 @@ def display_saved_faces():
 
 # --- Main application ---
 if __name__ == "__main__":
-
-    init_ultrasonic()
     # Set sounddevice defaults
     sd.default.device = 0
     
