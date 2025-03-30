@@ -102,10 +102,12 @@ def register_face():
         cv2.destroyAllWindows()
         cap = None  
 
-    root.withdraw()  # Hide the main window
-
     face_window = tk.Toplevel(root)
     face_window.title("Face Registration")
+    face_window.geometry("640x580")
+    # Make the window modal to prevent interactions with the main window
+    face_window.transient(root)
+    face_window.grab_set()
 
     face_label = tk.Label(face_window)
     face_label.pack()
@@ -122,6 +124,23 @@ def register_face():
     thread.start()
 
     update_face_feed(face_label)
+
+def close_face_registration():
+    global cap, face_window, wake_word_detected
+    print(wake_word_detected)
+    if face_window.winfo_exists():
+        face_window.grab_release()  # Release the grab before destroying
+        face_window.destroy()
+
+    if cap is not None:
+        cap.release()
+        cv2.destroyAllWindows()
+        cap = None  # Avoid using a released camera
+    
+    if not wake_word_detected:
+        start_audio_stream()  # Resume audio detection
+    else:
+        start_camera()
 
 def update_face_feed(face_label):
     if face_window.winfo_exists():  # Ensure window still exists
@@ -172,14 +191,13 @@ def save_face():
 
     # Ensure the face_window is properly closed
     if face_window:
+        face_window.grab_release()  # Release the grab before destroying
         face_window.destroy()  # Close the registration window
     
     if not wake_word_detected:
         start_audio_stream()  # Resume audio detection
     else:
         start_camera()
-        
-    root.deiconify()  # Show the main window again
 
 # --- Face Recognition ---
 def perform_face_recognition():
