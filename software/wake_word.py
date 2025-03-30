@@ -124,13 +124,15 @@ class WakeWordDetector:
             self.running = False
     
     def stop(self):
-        """Stop wake word detection"""
-        self.running = False
+        """Full cleanup of audio resources"""
         if self.audio_stream is not None:
-            self.audio_stream.stop()
+            if self.audio_stream.active:
+                self.audio_stream.stop()
             self.audio_stream.close()
-            self.audio_stream = None
-            print("Wake word detection stopped")
+        sd._terminate()  # Force terminate PortAudio
+        self.running = False
+        self.audio_stream = None
+        
 
 # Test function
 def main():

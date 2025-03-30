@@ -72,13 +72,14 @@ class FaceRecognition:
             print(f"Error saving face registry: {e}")
     
     def start_camera(self):
-        """Start the camera"""
+        """Robust camera initialization"""
         if self.camera is None or not self.camera.isOpened():
-            self.camera = cv2.VideoCapture(0)
+            self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)  # Explicitly use V4L2 backend
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
             self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            # Give camera time to initialize
-            time.sleep(0.5)
+            # Wait for camera to initialize
+            for _ in range(10):  # Attempt 10 frames to warm up
+                self.camera.read()
     
     def stop_camera(self):
         """Stop the camera"""
@@ -87,11 +88,13 @@ class FaceRecognition:
             self.camera = None
     
     def get_frame(self):
-        """Get a frame from the camera"""
-        if self.camera is not None and self.camera.isOpened():
+        """Get a valid frame from the camera"""
+        if self.camera is None or not self.camera.isOpened():
+            self.start_camera()  # Ensure camera is always active
+        
+        if self.camera.isOpened():
             ret, frame = self.camera.read()
-            if ret:
-                return frame
+            return frame if ret else None
         return None
     
     def convert_to_rgb(self, frame):

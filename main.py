@@ -91,12 +91,14 @@ class DoorLockApplication:
             time.sleep(0.5)  # Check every half second
     
     def start_wake_word_detection(self):
-        """Start listening for wake word"""
-        self.wake_word_detector.start(callback=self.on_wake_word_detected)
+        """Safely start wake word detection"""
+        if not self.wake_word_detector.is_listening:
+            self.wake_word_detector.start(callback=self.on_wake_word_detected)
     
     def stop_wake_word_detection(self):
-        """Stop listening for wake word"""
-        self.wake_word_detector.stop()
+        """Safely stop wake word detection"""
+        if self.wake_word_detector.is_listening:
+            self.wake_word_detector.stop()
     
     def on_wake_word_detected(self):
         """Called when wake word is detected"""
@@ -115,35 +117,42 @@ class DoorLockApplication:
         self.root.after(1000, self.perform_face_recognition)
     
     def perform_face_recognition(self):
-        """Perform face recognition and unlock door if successful"""
-        frame, name, recognized = self.face_recognition.recognize_person()
+        """Perform face recognition with continuous frame capture"""
+        # Allow camera to warm up and capture multiple frames
+        recognized = False
+        name = None
+        start_time = time.time()
         
-        # Display the frame
-        if frame is not None:
-            frame_rgb = self.face_recognition.convert_to_rgb(frame)
-            img = Image.fromarray(frame_rgb)
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.camera_label.imgtk = imgtk
-            self.camera_label.configure(image=imgtk)
-        
-        # Handle recognition result
+        # Check for 5 seconds max
+        while time.time() - start_time < 5:
+            frame = self.face_recognition.get_frame()
+            if frame is not None:
+                # Display frame
+                frame_rgb = self.face_recognition.convert_to_rgb(frame)
+                img = Image.fromarray(frame_rgb)
+                imgtk = ImageTk.PhotoImage(image=img)
+                self.camera_label.imgtk = imgtk
+                self.camera_label.configure(image=imgtk)
+                
+                # Perform recognition
+                _, detected_name, recognized = self.face_recognition.recognize_person(frame)
+                if recognized:
+                    name = detected_name
+                    break
+            self.root.update()  # Keep GUI responsive
+            time.sleep(0.1)
+
+        # Handle result after loop
         if recognized:
-            # Unlock the door
             self.door_lock.unlock()
             welcome_msg = f"Welcome, {name}!" if name else "Welcome!"
             self.update_status(welcome_msg, 'green')
-            
-            # Schedule door lock after 10 seconds
             self.root.after(10000, self.lock_door_and_reset)
         else:
-            # Show countdown for 3 seconds before resetting
             self.update_status("Face Not Recognized - Resetting in 3...", 'red')
             self.root.after(1000, lambda: self.update_status("Face Not Recognized - Resetting in 2...", 'red'))
             self.root.after(2000, lambda: self.update_status("Face Not Recognized - Resetting in 1...", 'red'))
             self.root.after(3000, self.reset_to_idle)
-        
-        # Stop camera
-        self.face_recognition.stop_camera()
     
     def lock_door_and_reset(self):
         """Lock the door and reset to idle state"""
@@ -152,6 +161,9 @@ class DoorLockApplication:
     
     def reset_to_idle(self):
         """Reset the system to idle state"""
+
+        self.face_recognition.camera = None
+
         # Cancel any pending resets
         if self.idle_timer is not None:
             self.root.after_cancel(self.idle_timer)
@@ -170,7 +182,13 @@ class DoorLockApplication:
         
         # Update status
         self.update_status("No Presence Detected (Idle Mode)", 'red')
-    
+        
+        # Force garbage collection
+        if hasattr(self, 'ultrasonic_thread'):
+            del self.ultrasonic_thread
+        self.system_state = "idle"
+        self.start_ultrasonic_thread()  # Restart monitoring
+        
     def update_status(self, message, color):
         """Update the status display"""
         self.status_label.config(text=message, fg=color)
