@@ -155,24 +155,6 @@ def update_face_feed(face_label):
         if face_window.winfo_exists():  # Double-check before scheduling the next update
             face_window.after(10, lambda: update_face_feed(face_label))
 
-def close_face_registration():
-    global cap, face_window, wake_word_detected
-    print(wake_word_detected)
-    if face_window.winfo_exists():
-        face_window.destroy()
-
-    if cap is not None:
-        cap.release()
-        cv2.destroyAllWindows()
-        cap = None  # Avoid using a released camera
-    
-    if not wake_word_detected:
-        start_audio_stream()  # Resume audio detection
-    else:
-        start_camera()
-        
-    root.deiconify()  # Show the main window again
-
 def save_face():
     global cap, face_window, wake_word_detected
     print(wake_word_detected)
