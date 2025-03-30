@@ -35,8 +35,8 @@ THRESHOLD = 0.78
 # Ultrasonic sensor settings
 TRIGGER_PIN = 17
 ECHO_PIN = 27
-PRESENCE_DISTANCE = 100  # Distance in cm (1m)
-PRESENCE_TIMEOUT = 180   # 3 minutes timeout in seconds
+PRESENCE_DISTANCE = 50  # Distance in cm (1m)
+PRESENCE_TIMEOUT = 120   # 2 minutes timeout in seconds
 
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -75,7 +75,7 @@ def ultrasonic_thread():
             
             if distance <= PRESENCE_DISTANCE and not presence_detected:
                 presence_detected = True
-                print("Presence detected within 1m!")
+                print("Presence detected within 50cm!")
                 root.after(0, presence_detected_callback)
                 break
                 
