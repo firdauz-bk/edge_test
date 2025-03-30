@@ -109,7 +109,14 @@ class DoorLockApp:
             style="Button.TButton"
         )
         self.exit_button.pack(side=tk.RIGHT, padx=20)
-        
+
+        # Camera frame (initially hidden)
+        self.camera_frame = ttk.Frame(self.main_frame)
+        self.camera_label = ttk.Label(self.camera_frame)
+        self.camera_label.pack()
+        self.camera_active = False
+        self.camera_update_id = None
+
         # Initialize hardware
         self.init_hardware()
         
@@ -141,8 +148,11 @@ class DoorLockApp:
         
     def init_hardware(self):
         """Initialize hardware components"""
+        # Configure GPIO mode first
+        GPIO.setmode(GPIO.BCM)
+
         # Initialize door lock
-        self.door_lock = DoorLock(solenoid_pin=18)
+        self.door_lock = DoorLock(solenoid_pin=SOLENOID_PIN)
         
         # Initialize ultrasonic sensor
         self.ultrasonic = UltrasonicSensor(trigger_pin=17, echo_pin=27)
@@ -391,12 +401,11 @@ class DoorLockApp:
     
     def start_registration(self):
         """Start the face registration process"""
-        # This will be implemented later with the face recognition module
         registration_window = tk.Toplevel(self.root)
         registration_window.title("Face Registration")
         registration_window.geometry("600x400")
         
-        # Add registration UI elements here
+        # Add registration UI elements
         label = ttk.Label(
             registration_window,
             text="Face Registration Mode",
@@ -412,23 +421,87 @@ class DoorLockApp:
         name_entry = ttk.Entry(name_frame, font=font.Font(family="Helvetica", size=14))
         name_entry.pack(side=tk.LEFT, padx=5)
         
+        # Camera preview
+        camera_frame = ttk.Frame(registration_window)
+        camera_frame.pack(pady=10)
+        camera_label = ttk.Label(camera_frame)
+        camera_label.pack()
+        
+        # Start camera for preview
+        cap = cv2.VideoCapture(0)
+        
+        def update_preview():
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    # Convert to RGB for display
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    # Convert to PIL Image
+                    img = Image.fromarray(frame)
+                    # Resize for preview
+                    img = img.resize((320, 240))
+                    # Convert to PhotoImage
+                    imgtk = ImageTk.PhotoImage(image=img)
+                    # Update label
+                    camera_label.imgtk = imgtk
+                    camera_label.configure(image=imgtk)
+                    # Schedule next update
+                    camera_label.after(33, update_preview)  # ~30fps
+        
+        # Start preview
+        update_preview()
+        
+        # Status message
+        status_label = ttk.Label(
+            registration_window,
+            text="Enter name and click 'Capture Face'",
+            font=font.Font(family="Helvetica", size=12)
+        )
+        status_label.pack(pady=10)
+        
         # Buttons
         button_frame = ttk.Frame(registration_window)
         button_frame.pack(pady=20)
         
+        def capture_face():
+            name = name_entry.get().strip()
+            if not name:
+                status_label.config(text="Please enter a name first!")
+                return
+                
+            # Register face using face recognition system
+            success = self.face_recognition.register_face(name)
+            
+            if success:
+                status_label.config(text=f"Successfully registered {name}!")
+                # Update UI in main window
+                if self.event_queue:
+                    self.event_queue.put(("REGISTRATION_COMPLETE", name))
+                # Close window after short delay
+                registration_window.after(2000, registration_window.destroy)
+            else:
+                status_label.config(text="Registration failed! Please try again.")
+        
         capture_button = ttk.Button(
             button_frame,
             text="Capture Face",
-            command=lambda: None  # Will be implemented with facial recognition
+            command=capture_face
         )
         capture_button.pack(side=tk.LEFT, padx=10)
+        
+        def cancel_registration():
+            cap.release()
+            registration_window.destroy()
         
         cancel_button = ttk.Button(
             button_frame,
             text="Cancel",
-            command=registration_window.destroy
+            command=cancel_registration
         )
         cancel_button.pack(side=tk.LEFT, padx=10)
+        
+        # Clean up on window close
+        registration_window.protocol("WM_DELETE_WINDOW", cancel_registration)
     
     def handle_registration_complete(self, name):
         """Handle completed face registration"""
@@ -438,38 +511,33 @@ class DoorLockApp:
     
     def exit_application(self):
         """Clean up and exit application"""
-        # Clean up GPIO
-        GPIO.cleanup()
+        # Stop all threads and cleanup resources
+        self.stop_camera_feed()
+        
+        if hasattr(self, 'wake_word_detector'):
+            self.wake_word_detector.cleanup()
+            
+        if hasattr(self, 'face_recognition'):
+            self.face_recognition.cleanup()
+            
+        if hasattr(self, 'door_lock'):
+            self.door_lock.cleanup()
+            
+        if hasattr(self, 'ultrasonic'):
+            self.ultrasonic.cleanup()
+            
+        # Clean up remaining GPIO
+        try:
+            GPIO.cleanup()
+        except:
+            pass
+            
         self.root.destroy()
-
-
-# Simulated triggers for testing (to be replaced with actual wake word and face recognition)
-def simulate_wakeup_word():
-    """Simulate wake word detection (for testing)"""
-    if system_state["current_mode"] == "WAKEUP_LISTENING":
-        event_queue.put(("WAKEUP_WORD_DETECTED", None))
-
-def simulate_face_recognized():
-    """Simulate face recognition (for testing)"""
-    if system_state["current_mode"] == "FACE_RECOGNITION":
-        event_queue.put(("FACE_RECOGNIZED", "John Doe"))
-
-def simulate_face_not_recognized():
-    """Simulate failed face recognition (for testing)"""
-    if system_state["current_mode"] == "FACE_RECOGNITION":
-        event_queue.put(("FACE_NOT_RECOGNIZED", None))
-
 
 if __name__ == "__main__":
     # Set up the root window
     root = tk.Tk()
     app = DoorLockApp(root)
-    
-    # For development/testing only
-    # Bind keys to simulate events
-    root.bind('w', lambda e: simulate_wakeup_word())
-    root.bind('f', lambda e: simulate_face_recognized())
-    root.bind('n', lambda e: simulate_face_not_recognized())
-    
+
     # Start the Tkinter event loop
     root.mainloop()
