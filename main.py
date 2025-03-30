@@ -32,8 +32,8 @@ audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
 THRESHOLD = 0.78
 
 # Ultrasonic sensor settings
-TRIGGER_PIN = 23  # Adjust to your GPIO pin
-ECHO_PIN = 24     # Adjust to your GPIO pin
+TRIGGER_PIN = 17  # Adjust to your GPIO pin
+ECHO_PIN = 27     # Adjust to your GPIO pin
 PRESENCE_DISTANCE = 100  # Distance in cm (1m)
 PRESENCE_TIMEOUT = 180   # 3 minutes timeout in seconds
 
