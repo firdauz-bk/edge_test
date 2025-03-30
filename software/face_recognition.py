@@ -80,12 +80,15 @@ class FaceRecognition:
             # Wait for camera to initialize
             for _ in range(10):  # Attempt 10 frames to warm up
                 self.camera.read()
+                time.sleep(0.1)
     
     def stop_camera(self):
-        """Stop the camera"""
-        if self.camera is not None and self.camera.isOpened():
-            self.camera.release()
-            self.camera = None
+        """Full camera release with cleanup"""
+        if self.camera is not None:
+            if self.camera.isOpened():
+                self.camera.release()
+            self.camera = None  # Critical for proper reinitialization
+        cv2.destroyAllWindows()
     
     def get_frame(self):
         """Get a valid frame from the camera"""

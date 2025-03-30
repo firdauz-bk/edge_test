@@ -100,6 +100,10 @@ class WakeWordDetector:
     
     def start(self, callback=None):
         """Start wake word detection"""
+        if sd._initialized:  # Check if PortAudio is already initialized
+            sd._terminate()
+        sd._initialize()  # Force fresh initialization
+        
         if self.running:
             return
             
@@ -129,7 +133,6 @@ class WakeWordDetector:
             if self.audio_stream.active:
                 self.audio_stream.stop()
             self.audio_stream.close()
-        sd._terminate()  # Force terminate PortAudio
         self.running = False
         self.audio_stream = None
         
