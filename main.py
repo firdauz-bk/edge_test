@@ -470,36 +470,42 @@ def recover_audio_device():
 
 # --- Main application ---
 if __name__ == "__main__":
-    # More thorough audio initialization
+    # Initial system setup
+    print("Starting Smart Door Lock System...")
+    
+    # Try to reset any existing audio processes at the OS level before starting
     try:
-        # Force terminate any existing audio processes
+        os.system("pulseaudio -k")  # For systems using PulseAudio
+        time.sleep(1.0)
+    except Exception as e:
+        print(f"Initial audio reset error (non-critical): {e}")
+    
+    # Set sounddevice defaults with better error handling
+    try:
+        # First terminate and initialize to ensure clean state
         sd._terminate()
-        time.sleep(1.5)
-        
-        # Initialize sounddevice with longer delay
+        time.sleep(1.0)
         sd._initialize()
-        time.sleep(1.5)
+        time.sleep(1.0)
         
-        # Try to find the best input device
+        # Try to find the first working input device
         devices = sd.query_devices()
         input_device = 0  # Default
         
-        # Look for input devices
         for i, device in enumerate(devices):
             if device['max_input_channels'] > 0:
                 input_device = i
-                print(f"Selected input device {i}: {device['name']}")
+                print(f"Found input device {i}: {device['name']}")
                 break
-                
-        # Set sounddevice defaults
+        
+        # Set the defaults
         sd.default.device = input_device
         sd.default.channels = 1
         sd.default.samplerate = 16000
-        
-        print(f"Audio initialized with device {input_device}")
+        print(f"Audio initialized with input device: {input_device}")
     except Exception as e:
-        print(f"Audio initialization error: {e}")
-        # Continue anyway, we'll handle errors later
+        print(f"Warning: Audio initialization issue: {e}")
+        print("Will attempt recovery during operation")
     
     # Set up Tkinter UI
     root = tk.Tk()
