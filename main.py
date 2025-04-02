@@ -30,13 +30,13 @@ SAMPLE_RATE = 16000
 DURATION = 1.0
 BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
 audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
-THRESHOLD = 0.75
+THRESHOLD = 0.78
 
 # Ultrasonic sensor settings
 TRIGGER_PIN = 17
 ECHO_PIN = 27
 PRESENCE_DISTANCE = 50  # Distance in cm (1m)
-PRESENCE_TIMEOUT = 30   # 2 minutes timeout in seconds
+PRESENCE_TIMEOUT = 120   # 2 minutes timeout in seconds
 
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -121,14 +121,12 @@ def safe_start_audio_stream():
     try:
         # Force reset sounddevice before starting
         sd._terminate()
-        time.sleep(1.5)
+        time.sleep(0.5)
         sd._initialize()
-        time.sleep(1.5)
+        time.sleep(0.5)
         
-        sd.default.device = 0  
         start_audio_stream()
         audio_system_busy = False
-        print("Audio stream successfully started")
     except Exception as e:
         print(f"Error in safe_start_audio_stream: {e}")
         audio_system_busy = False
@@ -153,36 +151,31 @@ def reset_to_idle_mode():
     # Clear states
     presence_detected = False
     wake_word_detected = False
-    audio_system_busy = True
+    audio_system_busy = True  # Mark as busy during reset
     
     # Cancel timer
     if reset_timer is not None:
         root.after_cancel(reset_timer)
         reset_timer = None
     
-    # Stop audio first
+    # Stop any active processes
     stop_audio_stream()
     
-    # Release camera resources properly
-    if cap is not None:
+    if cap is not None and cap.isOpened():
         cap.release()
         cap = None
-    cv2.destroyAllWindows()  # Ensure OpenCV releases resources
     
-    # Add safe PortAudio initialization
+    # Reset UI
+    camera_label.config(image='')
+    
+    # Give system time to release resources
     def delayed_restart():
         global audio_system_busy
-        try:
-            if not sd._lib.Pa_IsInitialized():
-                sd._initialize()
-        except Exception as e:
-            print(f"Error reinitializing PortAudio: {e}")
-        
         audio_system_busy = False
         status_label.config(text="Idle mode: Waiting for presence detection")
         start_ultrasonic_detection()
     
-    # Extended delay for hardware reset
+    # Delay restart to allow resources to be released
     root.after(2000, delayed_restart)
 
 def audio_callback(indata, frames, time, status):
@@ -367,9 +360,7 @@ def start_countdown(seconds):
         status_label.config(text=f"Face not recognized - Resetting in {seconds} seconds")
         root.after(1000, lambda: start_countdown(seconds - 1))
     else:
-        # Check if reset is already in progress
-        if not audio_system_busy:
-            reset_to_idle_mode()
+        reset_to_idle_mode()
 
 def lock_door_and_reset():
     lock_system.lock()
@@ -481,9 +472,9 @@ if __name__ == "__main__":
     
     # Force reset of audio system before starting
     sd._terminate()
-    time.sleep(0.5)
+    time.sleep(1.5)
     sd._initialize()
-    time.sleep(0.5)
+    time.sleep(1.5)
     
     # Start the app in idle mode using the ultrasonic sensor
     root.after(1000, start_ultrasonic_detection)
