@@ -36,7 +36,7 @@ THRESHOLD = 0.78
 TRIGGER_PIN = 17
 ECHO_PIN = 27
 PRESENCE_DISTANCE = 50  # Distance in cm (1m)
-PRESENCE_TIMEOUT = 120   # 2 minutes timeout in seconds
+PRESENCE_TIMEOUT = 30   # 2 minutes timeout in seconds
 
 # Load wake word model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
