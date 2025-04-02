@@ -24,7 +24,6 @@ ultrasonic_thread_running = False
 ultrasonic_stop_event = Event()
 reset_timer = None
 audio_system_busy = False
-callback_function = None
 
 # Set up audio buffer
 SAMPLE_RATE = 16000
@@ -120,50 +119,20 @@ def presence_detected_callback():
 def safe_start_audio_stream():
     global audio_system_busy, audio_stream
     try:
-        # Make sure no existing stream is active
-        if audio_stream is not None:
-            try:
-                audio_stream.stop()
-                audio_stream.close()
-            except:
-                pass
-            finally:
-                audio_stream = None
-        
         # Force reset sounddevice before starting
         sd._terminate()
-        time.sleep(1.0)  # Increased wait time
+        time.sleep(1)
         sd._initialize()
-        time.sleep(1.0)  # Increased wait time
+        time.sleep(1)
         
-        # Set explicit defaults
-        sd.default.device = 0
-        sd.default.channels = 1
-        sd.default.samplerate = 16000
-        
-        # Starting audio stream using direct reference to avoid global confusion
-        SAMPLE_RATE = 16000
-        DURATION = 1.0
-        BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
-        
-        audio_stream = sd.InputStream(
-            callback=callback_function, 
-            channels=1, 
-            samplerate=SAMPLE_RATE, 
-            blocksize=BUFFER_SIZE,
-            device=0,
-            latency='high',
-            dtype='float32'
-        )
-        audio_stream.start()
-        
+        start_audio_stream()
         audio_system_busy = False
         print("Audio stream successfully started")
     except Exception as e:
         print(f"Error in safe_start_audio_stream: {e}")
         audio_system_busy = False
-        # If can't start audio, reset to idle mode after delay
-        root.after(2000, reset_to_idle_mode)
+        # If can't start audio, reset to idle mode
+        root.after(0, reset_to_idle_mode)
 
 def schedule_reset_timer():
     global reset_timer
@@ -199,7 +168,7 @@ def reset_to_idle_mode():
             print(f"Error closing audio stream: {e}")
         finally:
             audio_stream = None
-
+    
     # Give extra time before reinitializing sounddevice
     def reset_audio_subsystem():
         try:
@@ -217,7 +186,8 @@ def reset_to_idle_mode():
     
     # Run audio reset in separate thread to avoid UI freezing
     Thread(target=reset_audio_subsystem, daemon=True).start()
-
+    
+    # Stop camera if running
     if cap is not None and cap.isOpened():
         cap.release()
         cap = None
@@ -225,15 +195,15 @@ def reset_to_idle_mode():
     # Reset UI
     camera_label.config(image='')
     
-    # Give system time to release resources
+    # Delay restart even longer to ensure audio system has time to reset
     def delayed_restart():
         global audio_system_busy
         audio_system_busy = False
         status_label.config(text="Idle mode: Waiting for presence detection")
         start_ultrasonic_detection()
     
-    # Delay restart to allow resources to be released
-    root.after(3000, delayed_restart)
+    # Longer delay before restart
+    root.after(3000, delayed_restart)  # Increased from 2000 to 3000
 
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
