@@ -24,6 +24,7 @@ ultrasonic_thread_running = False
 ultrasonic_stop_event = Event()
 reset_timer = None
 audio_system_busy = False
+callback_function = None
 
 # Set up audio buffer
 SAMPLE_RATE = 16000
@@ -117,21 +118,52 @@ def presence_detected_callback():
     schedule_reset_timer()
 
 def safe_start_audio_stream():
-    global audio_system_busy
+    global audio_system_busy, audio_stream
     try:
+        # Make sure no existing stream is active
+        if audio_stream is not None:
+            try:
+                audio_stream.stop()
+                audio_stream.close()
+            except:
+                pass
+            finally:
+                audio_stream = None
+        
         # Force reset sounddevice before starting
         sd._terminate()
-        time.sleep(0.5)
+        time.sleep(1.0)  # Increased wait time
         sd._initialize()
-        time.sleep(0.5)
+        time.sleep(1.0)  # Increased wait time
         
-        start_audio_stream()
+        # Set explicit defaults
+        sd.default.device = 0
+        sd.default.channels = 1
+        sd.default.samplerate = 16000
+        
+        # Starting audio stream using direct reference to avoid global confusion
+        SAMPLE_RATE = 16000
+        DURATION = 1.0
+        BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
+        
+        audio_stream = sd.InputStream(
+            callback=callback_function, 
+            channels=1, 
+            samplerate=SAMPLE_RATE, 
+            blocksize=BUFFER_SIZE,
+            device=0,
+            latency='high',
+            dtype='float32'
+        )
+        audio_stream.start()
+        
         audio_system_busy = False
+        print("Audio stream successfully started")
     except Exception as e:
         print(f"Error in safe_start_audio_stream: {e}")
         audio_system_busy = False
-        # If can't start audio, reset to idle mode
-        root.after(0, reset_to_idle_mode)
+        # If can't start audio, reset to idle mode after delay
+        root.after(2000, reset_to_idle_mode)
 
 def schedule_reset_timer():
     global reset_timer
@@ -143,7 +175,7 @@ def schedule_reset_timer():
     reset_timer = root.after(PRESENCE_TIMEOUT * 1000, reset_to_idle_mode)
 
 def reset_to_idle_mode():
-    global presence_detected, wake_word_detected, cap, reset_timer, audio_system_busy
+    global presence_detected, wake_word_detected, cap, reset_timer, audio_system_busy, audio_stream
     
     print("Resetting to idle mode...")
     status_label.config(text="Resetting to idle mode")
@@ -158,9 +190,34 @@ def reset_to_idle_mode():
         root.after_cancel(reset_timer)
         reset_timer = None
     
-    # Stop any active processes
-    stop_audio_stream()
+    # Force stop audio stream with more thorough cleanup
+    if audio_stream is not None:
+        try:
+            audio_stream.stop()
+            audio_stream.close()
+        except Exception as e:
+            print(f"Error closing audio stream: {e}")
+        finally:
+            audio_stream = None
+
+    # Give extra time before reinitializing sounddevice
+    def reset_audio_subsystem():
+        try:
+            sd._terminate()
+            time.sleep(1.5)  # Longer wait time
+            sd._initialize()
+            time.sleep(1.0)  # Longer wait time
+            # Reset defaults
+            sd.default.device = 0
+            sd.default.channels = 1
+            sd.default.samplerate = 16000
+            print("Audio subsystem completely reset")
+        except Exception as e:
+            print(f"Audio reset error: {e}")
     
+    # Run audio reset in separate thread to avoid UI freezing
+    Thread(target=reset_audio_subsystem, daemon=True).start()
+
     if cap is not None and cap.isOpened():
         cap.release()
         cap = None
@@ -176,7 +233,7 @@ def reset_to_idle_mode():
         start_ultrasonic_detection()
     
     # Delay restart to allow resources to be released
-    root.after(2000, delayed_restart)
+    root.after(3000, delayed_restart)
 
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
