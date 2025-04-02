@@ -59,6 +59,14 @@ ultrasonic_sensor = UltrasonicSensor(TRIGGER_PIN, ECHO_PIN)
 # Camera settings
 webcam_resolution = (640, 480)
 
+class FaceRecognition:
+    def __init__(self):
+        # Get absolute path to the saved_faces directory
+        self.faces_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_faces")
+        print(f"FaceRecognition initialized. Looking for faces in: {self.faces_dir}")
+        # Load saved faces from absolute path
+        self.load_known_faces()
+
 # --- Ultrasonic Sensor Thread ---
 def ultrasonic_thread():
     global presence_detected, ultrasonic_thread_running
@@ -158,6 +166,9 @@ def reset_to_idle_mode():
     print("Resetting to idle mode...")
     status_label.config(text="Resetting to idle mode")
     
+    # Reinitialize face recognition to ensure fresh state
+    face_recognition = FaceRecognition()
+
     # Clear states
     presence_detected = False
     wake_word_detected = False
@@ -500,7 +511,7 @@ if __name__ == "__main__":
     # Start the app in idle mode using the ultrasonic sensor
     root.after(1000, start_ultrasonic_detection)
     root.protocol("WM_DELETE_WINDOW", on_closing)
-    
+
     try:
         root.mainloop()
     finally:
