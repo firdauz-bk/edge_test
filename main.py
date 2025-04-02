@@ -117,14 +117,15 @@ def presence_detected_callback():
     schedule_reset_timer()
 
 def safe_start_audio_stream():
-    global audio_system_busy, audio_stream
+    global audio_system_busy
     try:
         # Force reset sounddevice before starting
         sd._terminate()
-        time.sleep(1)
+        time.sleep(1.5)
         sd._initialize()
-        time.sleep(1)
+        time.sleep(1.5)
         
+        sd.default.device = 0  
         start_audio_stream()
         audio_system_busy = False
         print("Audio stream successfully started")
@@ -191,6 +192,12 @@ def reset_to_idle_mode():
     if cap is not None and cap.isOpened():
         cap.release()
         cap = None
+    time.sleep (1.0)
+    
+    # Add explicit microphone reset
+    sd._terminate()
+    time.sleep(1.0)
+    sd._initialize()
     
     # Reset UI
     camera_label.config(image='')
