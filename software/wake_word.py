@@ -124,20 +124,9 @@ def stop_audio_stream():
     global audio_stream
     if audio_stream is not None:
         try:
-            audio_stream.stop()
             audio_stream.close()
             print("Audio stream stopped.")
         except Exception as e:
             print(f"Error closing audio stream: {e}")
         finally:
             audio_stream = None  # Clear the stream object
-            
-            # Force sounddevice to release resources
-            try:
-                sd._terminate()
-                time.sleep(0.5)
-                sd._initialize()
-                time.sleep(0.5)
-                print("Sounddevice resources reset")
-            except Exception as e:
-                print(f"Error resetting sounddevice: {e}")
