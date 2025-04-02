@@ -9,7 +9,7 @@ import sounddevice as sd
 import torchaudio.transforms as T
 import time
 
-from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word
+from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word, pause_audio_stream, resume_audio_stream
 from software.face_recognition import FaceRecognition
 from hardware.door_lock import DoorLock
 from hardware.ultrasonic import UltrasonicSensor
@@ -119,19 +119,29 @@ def presence_detected_callback():
 def safe_start_audio_stream():
     global audio_system_busy
     try:
+        # More thorough cleanup process
+        stop_audio_stream()  # Make sure any existing stream is stopped
+        
         # Force reset sounddevice before starting
         sd._terminate()
-        time.sleep(0.5)
+        time.sleep(1.0)  # Longer sleep
         sd._initialize()
-        time.sleep(0.5)
+        time.sleep(1.0)  # Longer sleep
         
+        # Reset defaults
+        sd.default.device = 0
+        sd.default.channels = 1
+        sd.default.samplerate = 16000
+        
+        # Start the stream
         start_audio_stream()
         audio_system_busy = False
+        print("Audio stream started successfully")
     except Exception as e:
         print(f"Error in safe_start_audio_stream: {e}")
         audio_system_busy = False
         # If can't start audio, reset to idle mode
-        root.after(0, reset_to_idle_mode)
+        root.after(2000, reset_to_idle_mode)  # longer delay
 
 def schedule_reset_timer():
     global reset_timer
@@ -178,6 +188,7 @@ def reset_to_idle_mode():
     # Delay restart to allow resources to be released
     root.after(2000, delayed_restart)
 
+# Replace stop_audio_stream() with pause_audio_stream() in the audio_callback function:
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
     if status:
@@ -194,7 +205,7 @@ def audio_callback(indata, frames, time, status):
         wake_word_detected = True
         print("Wake word detected! Scanning face...")
         status_label.config(text="Wake word detected - Starting face scan")
-        stop_audio_stream()
+        pause_audio_stream()  # Just pause instead of stopping
         
         # Cancel reset timer
         global reset_timer
@@ -415,6 +426,16 @@ def reset_audio():
         audio_system_busy = False
         root.after(1000, reset_to_idle_mode)
 
+def on_closing():
+    print("Application closing, cleaning up resources...")
+    stop_ultrasonic_detection()
+    stop_audio_stream()
+    if cap is not None and cap.isOpened():
+        cap.release()
+    lock_system.cleanup()
+    sd._terminate()  # Make sure to terminate sounddevice
+    root.destroy()
+
 # --- Main application ---
 if __name__ == "__main__":
     # Set sounddevice defaults
@@ -472,12 +493,13 @@ if __name__ == "__main__":
     
     # Force reset of audio system before starting
     sd._terminate()
-    time.sleep(1.5)
+    time.sleep(0.5)
     sd._initialize()
-    time.sleep(1.5)
+    time.sleep(0.5)
     
     # Start the app in idle mode using the ultrasonic sensor
     root.after(1000, start_ultrasonic_detection)
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     
     try:
         root.mainloop()
