@@ -135,9 +135,9 @@ def stop_audio_stream():
             # Force sounddevice to release resources
             try:
                 sd._terminate()
-                time.sleep(1.0)
+                time.sleep(0.5)
                 sd._initialize()
-                time.sleep(1.0)
+                time.sleep(0.5)
                 print("Sounddevice resources reset")
             except Exception as e:
                 print(f"Error resetting sounddevice: {e}")

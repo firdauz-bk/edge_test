@@ -30,7 +30,7 @@ SAMPLE_RATE = 16000
 DURATION = 1.0
 BUFFER_SIZE = int(SAMPLE_RATE * DURATION)
 audio_buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
-THRESHOLD = 0.78
+THRESHOLD = 0.75
 
 # Ultrasonic sensor settings
 TRIGGER_PIN = 17
@@ -167,10 +167,7 @@ def reset_to_idle_mode():
     
     # Reset UI
     camera_label.config(image='')
-
-    # First try to recover the audio device
-    recover_success = recover_audio_device()
-
+    
     # Give system time to release resources
     def delayed_restart():
         global audio_system_busy
@@ -179,7 +176,7 @@ def reset_to_idle_mode():
         start_ultrasonic_detection()
     
     # Delay restart to allow resources to be released
-    root.after(3000, delayed_restart)
+    root.after(2000, delayed_restart)
 
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
@@ -396,14 +393,10 @@ def reset_audio():
     
     # Force reset sounddevice
     try:
-        # Force close any existing streams at OS level
-        os.system("pulseaudio -k")  # Kill pulseaudio if running
-        time.sleep(1.5)
-        
         sd._terminate()
-        time.sleep(1.5)
+        time.sleep(1)
         sd._initialize()
-        time.sleep(1.5)
+        time.sleep(0.5)
         
         # Reset defaults
         sd.default.device = 0
@@ -415,58 +408,12 @@ def reset_audio():
         audio_system_busy = False
         
         # Reset to idle mode
-        root.after(2000, reset_to_idle_mode)
+        root.after(1000, reset_to_idle_mode)
     except Exception as e:
         print(f"Error during audio reset: {e}")
         status_label.config(text=f"Audio reset error: {e}")
         audio_system_busy = False
-        root.after(2000, reset_to_idle_mode)
-
-# Add this to main.py
-def recover_audio_device():
-    global audio_system_busy
-    
-    audio_system_busy = True
-    print("Attempting to recover audio device...")
-    
-    try:
-        # Try to force reset at the OS level
-        os.system("pulseaudio -k")  # For systems using PulseAudio
-        time.sleep(2.0)
-        
-        # Alternative for systems not using PulseAudio
-        # os.system("sudo service alsa-utils restart")  # Uncomment if needed
-        # time.sleep(2.0)
-        
-        # Properly terminate and reinitialize
-        sd._terminate()
-        time.sleep(2.0)
-        sd._initialize()
-        time.sleep(2.0)
-        
-        # Try to find a working device
-        devices = sd.query_devices()
-        working_device = 0  # Default
-        
-        # Try to find the first input device
-        for i, device in enumerate(devices):
-            if device['max_input_channels'] > 0:
-                working_device = i
-                print(f"Found input device: {i}: {device['name']}")
-                break
-        
-        # Set the working device
-        sd.default.device = working_device
-        sd.default.channels = 1
-        sd.default.samplerate = 16000
-        
-        print(f"Reset to device {working_device}")
-        audio_system_busy = False
-        return True
-    except Exception as e:
-        print(f"Device recovery failed: {e}")
-        audio_system_busy = False
-        return False
+        root.after(1000, reset_to_idle_mode)
 
 # --- Main application ---
 if __name__ == "__main__":
