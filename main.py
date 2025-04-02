@@ -145,7 +145,7 @@ def schedule_reset_timer():
     reset_timer = root.after(PRESENCE_TIMEOUT * 1000, reset_to_idle_mode)
 
 def reset_to_idle_mode():
-    global presence_detected, wake_word_detected, cap, reset_timer, audio_system_busy, audio_stream
+    global presence_detected, wake_word_detected, cap, reset_timer, audio_system_busy
     
     print("Resetting to idle mode...")
     status_label.config(text="Resetting to idle mode")
@@ -153,64 +153,37 @@ def reset_to_idle_mode():
     # Clear states
     presence_detected = False
     wake_word_detected = False
-    audio_system_busy = True  # Mark as busy during reset
+    audio_system_busy = True
     
     # Cancel timer
     if reset_timer is not None:
         root.after_cancel(reset_timer)
         reset_timer = None
     
-    # Force stop audio stream with more thorough cleanup
-    if audio_stream is not None:
-        try:
-            audio_stream.stop()
-            audio_stream.close()
-        except Exception as e:
-            print(f"Error closing audio stream: {e}")
-        finally:
-            audio_stream = None
+    # Stop audio first
+    stop_audio_stream()
     
-    # Give extra time before reinitializing sounddevice
-    def reset_audio_subsystem():
-        try:
-            sd._terminate()
-            time.sleep(1.5)  # Longer wait time
-            sd._initialize()
-            time.sleep(1.0)  # Longer wait time
-            # Reset defaults
-            sd.default.device = 0
-            sd.default.channels = 1
-            sd.default.samplerate = 16000
-            print("Audio subsystem completely reset")
-        except Exception as e:
-            print(f"Audio reset error: {e}")
-    
-    # Run audio reset in separate thread to avoid UI freezing
-    Thread(target=reset_audio_subsystem, daemon=True).start()
-    
-    # Stop camera if running
-    if cap is not None and cap.isOpened():
+    # Release camera resources properly
+    if cap is not None:
         cap.release()
         cap = None
-    time.sleep (1.0)
+    cv2.destroyAllWindows()  # Ensure OpenCV releases resources
     
-    # Add explicit microphone reset
-    sd._terminate()
-    time.sleep(1.0)
-    sd._initialize()
-    
-    # Reset UI
-    camera_label.config(image='')
-    
-    # Delay restart even longer to ensure audio system has time to reset
+    # Add safe PortAudio initialization
     def delayed_restart():
         global audio_system_busy
+        try:
+            if not sd._lib.Pa_IsInitialized():
+                sd._initialize()
+        except Exception as e:
+            print(f"Error reinitializing PortAudio: {e}")
+        
         audio_system_busy = False
         status_label.config(text="Idle mode: Waiting for presence detection")
         start_ultrasonic_detection()
     
-    # Longer delay before restart
-    root.after(3000, delayed_restart)  # Increased from 2000 to 3000
+    # Extended delay for hardware reset
+    root.after(2000, delayed_restart)
 
 def audio_callback(indata, frames, time, status):
     global wake_word_detected, audio_buffer
@@ -394,7 +367,9 @@ def start_countdown(seconds):
         status_label.config(text=f"Face not recognized - Resetting in {seconds} seconds")
         root.after(1000, lambda: start_countdown(seconds - 1))
     else:
-        reset_to_idle_mode()
+        # Check if reset is already in progress
+        if not audio_system_busy:
+            reset_to_idle_mode()
 
 def lock_door_and_reset():
     lock_system.lock()
