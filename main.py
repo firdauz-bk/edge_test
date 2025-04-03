@@ -1,4 +1,5 @@
 import tkinter as tk
+import threading
 from threading import Thread, Event
 import cv2
 from PIL import Image, ImageTk
@@ -8,6 +9,10 @@ import torch
 import sounddevice as sd
 import torchaudio.transforms as T
 import time
+import socket
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import urllib.parse
 
 from software.wake_word import WakeWordModel, start_audio_stream, stop_audio_stream, set_callback, detect_wake_word, pause_audio_stream, resume_audio_stream
 from software.face_recognition import FaceRecognition
@@ -24,6 +29,18 @@ ultrasonic_thread_running = False
 ultrasonic_stop_event = Event()
 reset_timer = None
 audio_system_busy = False
+
+# Dashboard Stuff
+dashboard_server = None
+system_status = {
+    "presence_detected": False,
+    "wake_word_detected": False,
+    "face_recognized": False,
+    "door_locked": True,
+    "system_mode": "Idle",
+    "last_event": "",
+    "last_event_time": "",
+}
 
 # Set up audio buffer
 SAMPLE_RATE = 16000
@@ -67,6 +84,134 @@ class FaceRecognition:
         # Load saved faces from absolute path
         self.load_known_faces()
 
+# --- Dashboard Thread ---
+# Create a simple HTTP server for the dashboard
+class DashboardHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        global system_status
+        
+        # Parse the path
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+        
+        # Handle API requests
+        if path == '/api/status':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')  # Allow cross-origin requests
+            self.end_headers()
+            
+            # Add current time to status
+            system_status["current_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            self.wfile.write(json.dumps(system_status).encode())
+            return
+        
+        # Handle commands
+        elif path == '/api/command':
+            query = urllib.parse.parse_qs(parsed_path.query)
+            
+            if 'action' in query:
+                action = query['action'][0]
+                
+                if action == 'reset':
+                    # Schedule reset on the main thread
+                    root.after(0, reset_to_idle_mode)
+                    response = {"status": "success", "message": "System reset initiated"}
+                elif action == 'register_face':
+                    # Schedule face registration on the main thread
+                    root.after(0, register_face)
+                    response = {"status": "success", "message": "Face registration initiated"}
+                elif action == 'unlock':
+                    # Schedule door unlock on the main thread
+                    root.after(0, lambda: unlock_door_manually())
+                    response = {"status": "success", "message": "Door unlock initiated"}
+                else:
+                    response = {"status": "error", "message": "Unknown action"}
+            else:
+                response = {"status": "error", "message": "No action specified"}
+                
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+            return
+        
+        # Serve the dashboard HTML
+        elif path == '/' or path == '':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            # Simple HTML page that redirects to the dashboard URL
+            html = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Smart Door Lock System</title>
+                <meta http-equiv="refresh" content="0;url=http://localhost:5000">
+            </head>
+            <body>
+                <p>Redirecting to dashboard...</p>
+            </body>
+            </html>
+            """
+            
+            self.wfile.write(html.encode())
+            return
+        
+        # Default 404 response for any other path
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b'Not Found')
+    
+    def log_message(self, format, *args):
+        # Silence HTTP server logs to avoid cluttering console
+        return
+
+# Function to start the dashboard server
+def start_dashboard_server():
+    global dashboard_server
+    
+    try:
+        # Use port 8080 for the API
+        server_address = ('', 8080)
+        dashboard_server = HTTPServer(server_address, DashboardHandler)
+        
+        print(f"Starting dashboard server on http://localhost:8080")
+        dashboard_thread = threading.Thread(target=dashboard_server.serve_forever, daemon=True)
+        dashboard_thread.start()
+    except Exception as e:
+        print(f"Error starting dashboard server: {e}")
+
+# Function to stop the dashboard server
+def stop_dashboard_server():
+    global dashboard_server
+    if dashboard_server:
+        dashboard_server.shutdown()
+        print("Dashboard server stopped")
+
+# Function to update the system status
+def update_system_status(key, value, event_desc=None):
+    global system_status
+    system_status[key] = value
+    
+    if event_desc:
+        system_status["last_event"] = event_desc
+        system_status["last_event_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+# Add this to unlock the door manually (for dashboard control)
+def unlock_door_manually():
+    lock_system.unlock()
+    update_system_status("door_locked", False, "Door manually unlocked from dashboard")
+    status_label.config(text="Door manually unlocked from dashboard")
+    
+    # Set timer to lock door after 10 seconds
+    root.after(10000, lock_door_and_reset)
+
+# Modify existing functions to update system_status
+
 # --- Ultrasonic Sensor Thread ---
 def ultrasonic_thread():
     global presence_detected, ultrasonic_thread_running
@@ -108,6 +253,10 @@ def presence_detected_callback():
     print("Presence detected! Starting wake word detection...")
     status_label.config(text="Presence detected - Listening for wake word")
     
+    # Update system status
+    update_system_status("presence_detected", True, "Presence detected")
+    update_system_status("system_mode", "Listening for wake word")
+
     # Check if audio system is busy
     if audio_system_busy:
         print("Audio system busy, waiting before starting...")
@@ -166,6 +315,14 @@ def reset_to_idle_mode():
     print("Resetting to idle mode...")
     status_label.config(text="Resetting to idle mode")
     
+    # Update system status
+    update_system_status("presence_detected", False)
+    update_system_status("wake_word_detected", False)
+    update_system_status("face_recognized", False)
+    update_system_status("system_mode", "Idle")
+    update_system_status("last_event", "System reset to idle")
+    update_system_status("last_event_time", time.strftime("%Y-%m-%d %H:%M:%S"))
+
     # Reinitialize face recognition to ensure fresh state
     face_recognition = FaceRecognition()
 
@@ -218,6 +375,11 @@ def audio_callback(indata, frames, time, status):
         status_label.config(text="Wake word detected - Starting face scan")
         pause_audio_stream()  # Just pause instead of stopping
         
+        # Update system status
+        update_system_status("wake_word_detected", True, "Wake word detected")
+        update_system_status("system_mode", "Scanning face")
+        
+
         # Cancel reset timer
         global reset_timer
         if reset_timer is not None:
@@ -351,20 +513,33 @@ def perform_face_recognition():
             frame, recognized = face_recognition.recognize_face(frame)
             result_text = "Face Recognized!" if recognized else "Face Not Recognized"
             
+            # Update system status
+            update_system_status("face_recognized", recognized, 
+                              "Face recognized" if recognized else "Face not recognized")
+
             # Draw result on frame
             cv2.putText(frame, result_text, (20, 50), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, 
-                       (0, 255, 0) if recognized else (0, 0, 255), 2)
-            
+                       (0, 255, 0) if recognized else (0, 0, 255), 2)        
+
             # If recognized, unlock door
             if recognized:
                 status_label.config(text="Face recognized - Door unlocked")
                 lock_system.unlock()
+
+                # Update system status
+                update_system_status("door_locked", False, "Door unlocked")
+                update_system_status("system_mode", "Door unlocked")
+
                 # Lock after 10 seconds as specified in requirements
                 root.after(10000, lock_door_and_reset)
             else:
                 # Show countdown for 5 seconds before resetting
                 status_label.config(text="Face not recognized - Resetting in 5 seconds")
+                
+                # Update system status
+                update_system_status("system_mode", "Face not recognized - Resetting")
+
                 countdown_seconds = 5
                 start_countdown(countdown_seconds)
             
@@ -386,6 +561,10 @@ def start_countdown(seconds):
 
 def lock_door_and_reset():
     lock_system.lock()
+
+    # Update system status
+    update_system_status("door_locked", True, "Door locked")
+    
     status_label.config(text="Door locked - Resetting system")
     root.after(1000, reset_to_idle_mode)
 
@@ -441,11 +620,15 @@ def on_closing():
     print("Application closing, cleaning up resources...")
     stop_ultrasonic_detection()
     stop_audio_stream()
+    stop_dashboard_server()  # Stop dashboard server
+
     if cap is not None and cap.isOpened():
         cap.release()
     lock_system.cleanup()
     sd._terminate()  # Make sure to terminate sounddevice
     root.destroy()
+
+
 
 # --- Main application ---
 if __name__ == "__main__":
@@ -491,6 +674,9 @@ if __name__ == "__main__":
     audio_status = tk.Label(root, text="Audio device info:")
     audio_status.pack(pady=5)
     
+    # Start the dashboard server
+    start_dashboard_server()
+
     try:
         devices_info = f"Audio devices: {sd.query_devices()}"
         device_label = tk.Label(root, text=devices_info[:80] + "...", font=("Courier", 8))
